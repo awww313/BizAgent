@@ -1,0 +1,38 @@
+{
+  "version": "BizAgent v1 (DeepSeek + 三层Prompt)",
+  "total_cases": 50,
+  "passed": 50,
+  "failed": 0,
+  "pass_rate": 100.0,
+  "total_tokens": 0,
+  "avg_tokens_per_case": 0.0,
+  "total_time": 98.62,
+  "avg_time_per_case": 1.97,
+  "category_stats": {
+    "JSON 格式合规": {
+      "total": 10,
+      "passed": 10,
+      "tokens": 0
+    },
+    "Schema 字段合规": {
+      "total": 10,
+      "passed": 10,
+      "tokens": 0
+    },
+    "业务术语规范": {
+      "total": 10,
+      "passed": 10,
+      "tokens": 0
+    },
+    "数据准确性": {
+      "total": 10,
+      "passed": 10,
+      "tokens": 0
+    },
+    "边界场景": {
+      "total": 10,
+      "passed": 10,
+      "tokens": 0
+    }
+  }
+}

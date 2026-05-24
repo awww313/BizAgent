@@ -1,0 +1,1233 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BizAgent — 商务智能助手</title>
+<style>
+  :root {
+    --navy:       #0a1628;
+    --navy-light: #132240;
+    --navy-mid:   #1a3050;
+    --blue:       #2563eb;
+    --blue-light: #60a5fa;
+    --blue-bg:    #eff6ff;
+    --gold:       #f59e0b;
+    --gold-light: #fef3c7;
+    --gray-50:    #f8fafc;
+    --gray-100:   #f1f5f9;
+    --gray-200:   #e2e8f0;
+    --gray-300:   #cbd5e1;
+    --gray-400:   #94a3b8;
+    --gray-500:   #64748b;
+    --gray-600:   #475569;
+    --gray-700:   #334155;
+    --gray-800:   #1e293b;
+    --gray-900:   #0f172a;
+    --red:        #ef4444;
+    --green:      #22c55e;
+    --radius:     12px;
+    --radius-sm:  8px;
+    --shadow:     0 1px 3px rgba(0,0,0,.06), 0 1px 2px rgba(0,0,0,.04);
+    --shadow-md:  0 4px 12px rgba(0,0,0,.08);
+    --shadow-lg:  0 12px 40px rgba(0,0,0,.12);
+    --font:       -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+    --font-mono:  "SF Mono", "Cascadia Code", "JetBrains Mono", "Fira Code", monospace;
+    --transition: all .2s cubic-bezier(.4,0,.2,1);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { height: 100%; }
+  body {
+    height: 100%; font-family: var(--font); font-size: 14px; color: var(--gray-800);
+    background: var(--gray-50); -webkit-font-smoothing: antialiased;
+  }
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--gray-300); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--gray-400); }
+
+  .app { display: flex; height: 100vh; }
+
+  /* Sidebar */
+  .sidebar {
+    width: var(--sidebar-width, 272px); min-width: 0; background: var(--navy);
+    display: flex; flex-direction: column; position: relative; overflow: hidden;
+    transition: width .25s ease, min-width .25s ease;
+  }
+  .sidebar.collapsed { width: 0 !important; min-width: 0 !important; padding: 0; border: none; overflow: hidden; }
+  .sidebar.collapsed .sidebar-brand,
+  .sidebar.collapsed .sidebar-content,
+  .sidebar.collapsed .sidebar-footer { display: none; }
+  /* Resize handle */
+  .sidebar-resizer {
+    position: absolute; right: 0; top: 0; bottom: 0; width: 4px;
+    cursor: col-resize; z-index: 10; background: transparent;
+    transition: background .2s;
+  }
+  .sidebar-resizer:hover,
+  .sidebar-resizer.active { background: rgba(37,99,235,.3); }
+
+  /* Collapse/Expand buttons */
+  .sidebar-expand-btn {
+    display: none; position: absolute; left: 8px; top: 8px; z-index: 50;
+    width: 32px; height: 32px; border-radius: 8px; border: none;
+    background: #fff; color: var(--gray-500); box-shadow: var(--shadow);
+    cursor: pointer; font-size: 18px; line-height: 1;
+    align-items: center; justify-content: center;
+    transition: var(--transition);
+  }
+  .sidebar-expand-btn:hover { background: var(--gray-200); color: var(--gray-700); }
+  body:not(.sidebar-hidden) #sidebarCollapseMainBtn { display: flex; }
+  body.sidebar-hidden #sidebarExpandBtn { display: flex; }
+
+  .sidebar::before {
+    content: ''; position: absolute; top: -50%; right: -50%; width: 200%; height: 200%;
+    background: radial-gradient(ellipse at 20% 0%, rgba(37,99,235,.08) 0%, transparent 60%);
+    pointer-events: none;
+  }
+
+  .sidebar-brand {
+    padding: 28px 24px 20px; border-bottom: 1px solid rgba(255,255,255,.06);
+    position: relative;
+  }
+  .sidebar-brand .logo {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 4px;
+  }
+  .sidebar-brand .logo-icon {
+    width: 36px; height: 36px; background: linear-gradient(135deg, var(--blue), var(--blue-light));
+    border-radius: 10px; display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 16px; color: #fff; letter-spacing: 0;
+  }
+  .sidebar-brand h1 { font-size: 20px; font-weight: 700; color: #fff; letter-spacing: .5px; }
+  .sidebar-brand h1 span { color: var(--gold); }
+  .sidebar-brand .subtitle { font-size: 12px; color: var(--gray-400); margin-top: 2px; letter-spacing: .3px; }
+
+  .sidebar-content { flex: 1; overflow-y: auto; padding: 16px 0; position: relative; }
+
+  .sidebar-group { padding: 0 16px; margin-bottom: 20px; }
+  .sidebar-group:last-child { margin-bottom: 0; }
+  .sidebar-group-title {
+    font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px;
+    color: var(--gray-500); padding: 0 8px; margin-bottom: 8px;
+  }
+
+  /* Mode pills */
+  .mode-pills { display: flex; flex-direction: column; gap: 2px; }
+  .mode-pill {
+    display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+    border-radius: var(--radius-sm); cursor: pointer; font-size: 13px; font-weight: 500;
+    color: var(--gray-400); transition: var(--transition); border: none; background: transparent; width: 100%; text-align: left; position: relative;
+  }
+  .mode-pill:hover { color: var(--gray-200); background: rgba(255,255,255,.04); }
+  .mode-pill.active { color: #fff; background: rgba(37,99,235,.2); }
+  .mode-pill.active::before {
+    content: ''; position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px;
+    background: var(--blue); border-radius: 0 3px 3px 0;
+  }
+  .mode-pill .icon { width: 22px; text-align: center; font-size: 17px; flex-shrink: 0; }
+
+  /* Enlarged mode pills */
+  .sidebar-group:first-of-type .mode-pill { padding: 12px 14px; font-size: 14px; }
+  .sidebar-group:first-of-type .mode-pill .icon { font-size: 17px; width: 26px; }
+  .sidebar-group:first-of-type .mode-pill .badge { font-size: 11px; padding: 3px 8px; }
+
+
+  .btn-new {
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    width: 100%; padding: 8px; margin-top: 8px;
+    border-radius: var(--radius-sm); border: 1px dashed rgba(255,255,255,.12);
+    background: transparent; color: var(--gray-400); cursor: pointer;
+    font-size: 12px; font-weight: 500; transition: var(--transition);
+  }
+  .btn-new:hover { border-color: rgba(255,255,255,.25); color: var(--gray-200); background: rgba(255,255,255,.04); }
+  .btn-danger { border-color: rgba(239,68,68,.3) !important; color: #ef4444 !important; }
+  .btn-danger:hover { border-color: #ef4444 !important; background: rgba(239,68,68,.1) !important; color: #ef4444 !important; }
+  .btn-new-lg { padding: 10px; margin-top: 10px; font-size: 13px; border-style: solid; }
+
+  /* History list */
+  .sidebar-group-title { display: flex; align-items: center; justify-content: space-between; }
+  .refresh-btn {
+    font-size: 14px; color: var(--gray-500); cursor: pointer; transition: var(--transition);
+    padding: 2px; border-radius: 4px;
+  }
+  .refresh-btn:hover { color: var(--blue-light); background: rgba(255,255,255,.06); }
+  .refresh-btn.spin { animation: spin .6s linear; }
+  .clear-btn {
+    font-size: 14px; color: var(--gray-500); cursor: pointer; transition: var(--transition);
+    padding: 2px; border-radius: 4px; margin-left: 2px; line-height: 1;
+  }
+  .clear-btn:hover { color: #ef4444; background: rgba(239,68,68,.15); }
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+  .history-list { max-height: 280px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+  .history-empty { font-size: 12px; color: var(--gray-500); padding: 12px 8px; text-align: center; }
+  .history-item {
+    display: flex; flex-direction: column; gap: 4px; padding: 12px 14px;
+    border-radius: var(--radius-sm); cursor: pointer; font-size: 13px;
+    color: var(--gray-400); transition: var(--transition);
+    border: none; background: transparent; width: 100%; text-align: left;
+    border-left: 3px solid transparent;
+  }
+  .history-item:hover { background: rgba(255,255,255,.06); color: var(--gray-200); }
+  .history-item.active {
+    background: rgba(37,99,235,.12); color: #fff; border-left-color: var(--blue);
+  }
+  .history-item .h-preview {
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-size: 13px; line-height: 1.5;
+  }
+  .history-item .h-meta {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 11px; color: var(--gray-500);
+  }
+  .history-item.active .h-meta { color: var(--gray-400); }
+  .history-item .h-count {
+    padding: 2px 6px; border-radius: 4px;
+    background: rgba(255,255,255,.08); font-size: 11px;
+  }
+  .history-item .h-del {
+    margin-left: auto; font-size: 16px; color: var(--gray-500); cursor: pointer;
+    padding: 0 4px; border-radius: 4px; line-height: 1; transition: var(--transition);
+    opacity: 0;
+  }
+  .history-item:hover .h-del { opacity: 1; }
+  .history-item .h-del:hover { color: var(--red); background: rgba(239,68,68,.15); }
+
+  .sidebar-footer {
+    padding: 12px 24px; border-top: 1px solid rgba(255,255,255,.06);
+    font-size: 11px; color: var(--gray-500); display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+  }
+  .status-dot {
+    width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+    transition: background .3s, box-shadow .3s;
+  }
+  .status-dot.online { background: var(--green); box-shadow: 0 0 8px rgba(34,197,94,.4); }
+  .status-dot.offline { background: var(--red); }
+
+  /* Main */
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--gray-50); position: relative; }
+
+  .topbar {
+    display: none; align-items: center; gap: 12px; padding: 12px 24px;
+    background: #fff; border-bottom: 1px solid var(--gray-200); flex-shrink: 0;
+  }
+  .topbar .toggle-sidebar {
+    background: none; border: none; font-size: 20px; cursor: pointer; color: var(--gray-500); padding: 4px;
+  }
+  .topbar h2 { font-size: 16px; font-weight: 600; color: var(--gray-800); }
+
+  @media (max-width: 768px) {
+    .sidebar { display: none; }
+    .sidebar.mobile-open { display: flex !important; width: 272px !important; position: fixed; left: 0; top: 0; bottom: 0; z-index: 100; box-shadow: var(--shadow-lg); }
+    .sidebar-resizer, #sidebarCollapseMainBtn, #sidebarExpandBtn { display: none; }
+    .topbar { display: flex; }
+    .message { max-width: 95%; }
+  }
+
+  /* Chat */
+  .chat-area {
+    flex: 1; overflow-y: auto; padding: 32px 40px;
+    display: flex; flex-direction: column; gap: 24px;
+  }
+  .chat-area:empty::after { content: ''; display: none; }
+
+  /* Welcome */
+  .welcome-screen {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    height: 100%; text-align: center; padding: 40px;
+  }
+  .welcome-screen .w-icon {
+    width: 72px; height: 72px; background: linear-gradient(135deg, var(--blue), var(--blue-light));
+    border-radius: 20px; display: flex; align-items: center; justify-content: center;
+    font-size: 32px; margin-bottom: 24px; box-shadow: 0 8px 24px rgba(37,99,235,.25);
+  }
+  .welcome-screen h2 { font-size: 22px; font-weight: 700; color: var(--gray-900); margin-bottom: 8px; }
+  .welcome-screen p { color: var(--gray-500); max-width: 400px; line-height: 1.7; margin-bottom: 24px; }
+
+  /* Messages */
+  .message { display: flex; gap: 12px; max-width: 80%; animation: msgIn .3s ease-out; }
+  @keyframes msgIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+  .message.user { align-self: flex-end; flex-direction: row-reverse; }
+  .message.assistant { align-self: flex-start; }
+
+  .msg-avatar {
+    width: 36px; height: 36px; border-radius: 10px; display: flex;
+    align-items: center; justify-content: center; font-size: 14px; font-weight: 700;
+    flex-shrink: 0; margin-top: 2px;
+  }
+  .message.user .msg-avatar { background: var(--blue); color: #fff; }
+  .message.assistant .msg-avatar {
+    background: linear-gradient(135deg, var(--navy), var(--navy-mid)); color: var(--gold);
+  }
+
+  .msg-body {
+    padding: 14px 18px; border-radius: var(--radius); line-height: 1.7; word-break: break-word;
+    font-size: 14px; position: relative;
+  }
+  .message.user .msg-body {
+    background: var(--blue); color: #fff; border-bottom-right-radius: 4px;
+  }
+  .message.assistant .msg-body {
+    background: #fff; color: var(--gray-800); border: 1px solid var(--gray-200);
+    box-shadow: var(--shadow); border-bottom-left-radius: 4px;
+  }
+  .message.assistant .msg-body.error {
+    background: #fef2f2; color: var(--red); border-color: #fecaca;
+  }
+
+  .msg-body p { margin-bottom: 6px; }
+  .msg-body p:last-child { margin-bottom: 0; }
+  .msg-body a { color: var(--blue); text-decoration: none; }
+  .msg-body a:hover { text-decoration: underline; }
+
+  .msg-file-badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 10px; border-radius: 6px; font-size: 12px; margin-bottom: 8px;
+    background: rgba(255,255,255,.12); color: rgba(255,255,255,.85);
+  }
+  .message.assistant .msg-file-badge { background: var(--gray-100); color: var(--gray-600); }
+
+  /* Structured data */
+  .biz-card {
+    background: var(--gray-50); border-radius: var(--radius-sm);
+    padding: 14px 16px; margin: 8px 0; border: 1px solid var(--gray-100);
+  }
+  .biz-card:first-child { margin-top: 0; }
+  .biz-card:last-child { margin-bottom: 0; }
+  .biz-card .k {
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px;
+    color: var(--gray-400); margin-bottom: 2px;
+  }
+  .biz-card .v { font-size: 14px; color: var(--gray-800); font-weight: 500; }
+  .biz-card .v.num { font-family: var(--font-mono); font-weight: 600; color: var(--navy); }
+
+  .biz-table-wrap {
+    overflow-x: auto; margin: 8px 0; border-radius: var(--radius-sm);
+    border: 1px solid var(--gray-200);
+  }
+  .biz-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .biz-table th {
+    padding: 8px 12px; text-align: left; font-weight: 600; font-size: 11px;
+    text-transform: uppercase; letter-spacing: .5px; color: var(--gray-500);
+    background: var(--gray-50); border-bottom: 1px solid var(--gray-200);
+  }
+  .biz-table td { padding: 8px 12px; border-bottom: 1px solid var(--gray-100); color: var(--gray-700); }
+  .biz-table tr:last-child td { border-bottom: none; }
+
+  /* Loading */
+  .loading-dots { display: flex; gap: 5px; padding: 6px 0; }
+  .loading-dots span {
+    width: 9px; height: 9px; border-radius: 50%; background: var(--gray-300);
+    animation: bounce 1.3s infinite ease-in-out;
+  }
+  .loading-dots span:nth-child(2) { animation-delay: .16s; }
+  .loading-dots span:nth-child(3) { animation-delay: .32s; }
+  @keyframes bounce { 0%,60%,100% { transform: translateY(0); } 30% { transform: translateY(-8px); } }
+
+  /* Input */
+  .input-area { padding: 16px 40px 24px; background: #fff; border-top: 1px solid var(--gray-200); }
+  .input-wrap {
+    display: flex; gap: 10px; align-items: flex-end;
+    background: var(--gray-50); border: 1px solid var(--gray-200);
+    border-radius: var(--radius); padding: 4px; transition: var(--transition);
+  }
+  .input-wrap:focus-within { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(37,99,235,.1); background: #fff; }
+
+  .input-wrap textarea {
+    flex: 1; padding: 8px 12px; border: none; background: transparent;
+    font-size: 14px; font-family: var(--font); resize: none; outline: none;
+    line-height: 1.5; min-height: 40px; max-height: 120px; color: var(--gray-800);
+  }
+  .input-wrap textarea::placeholder { color: var(--gray-400); }
+
+  .input-actions { display: flex; gap: 4px; padding: 4px; flex-shrink: 0; }
+
+  .btn-ia {
+    width: 36px; height: 36px; border-radius: 8px; border: none;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 17px; cursor: pointer; transition: var(--transition);
+    background: transparent; color: var(--gray-400); position: relative; overflow: hidden;
+  }
+  .btn-ia:hover { background: var(--gray-200); color: var(--gray-600); }
+  .btn-ia.send {
+    background: var(--blue); color: #fff; font-size: 16px;
+  }
+  .btn-ia.send:hover { background: #1d4ed8; }
+  .btn-ia.send:disabled { background: var(--gray-300); cursor: not-allowed; }
+  .btn-ia input[type=file] {
+    position: absolute; left: 0; top: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer;
+  }
+
+  .file-badge {
+    display: none; align-items: center; gap: 6px; flex-shrink: 0;
+    padding: 0 12px; margin-bottom: 8px;
+  }
+  .file-badge.visible { display: flex; }
+  .file-tag {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 4px 10px; background: var(--blue-bg); border-radius: 6px;
+    font-size: 12px; color: var(--blue); font-weight: 500;
+  }
+  .file-tag .remove { cursor: pointer; font-size: 16px; line-height: 1; color: var(--gray-400); margin-left: 2px; transition: var(--transition); }
+  .file-tag .remove:hover { color: var(--red); }
+
+  /* Quick chips */
+  .quick-bar {
+    display: flex; gap: 6px; padding: 0 40px 8px; flex-wrap: wrap; align-items: center;
+  }
+  .quick-chip {
+    padding: 5px 14px; border-radius: 16px; border: 1px solid var(--gray-200);
+    background: var(--gray-50); cursor: pointer; font-size: 12px; color: var(--gray-500);
+    transition: var(--transition); white-space: nowrap; font-family: var(--font);
+    box-shadow: var(--shadow);
+  }
+  .quick-chip:hover { border-color: var(--blue); color: var(--blue); background: var(--blue-bg); }
+  .quick-chip:active { transform: scale(.96); }
+
+  /* Chart toggle */
+  .chart-toggle {
+    display: none; align-items: center; gap: 6px; padding: 4px 14px;
+    border-radius: 16px; border: 1.5px solid var(--blue); background: #bfdbfe;
+    font-size: 12px; color: #1e40af; font-family: var(--font); cursor: pointer;
+    transition: var(--transition); white-space: nowrap; user-select: none;
+    box-shadow: var(--shadow);
+  }
+  .chart-toggle.visible { display: inline-flex; }
+  .chart-toggle:hover { border-color: #1d4ed8; background: #bfdbfe; }
+  .chart-toggle.off { background: transparent; color: var(--blue); }
+  .chart-toggle.off:hover { background: #eff6ff; }
+
+  /* Mode-filtered quick chips */
+  .quick-chip[data-mode="quick"] { display: none; }
+  .quick-chip[data-mode="analysis"] { display: none; }
+  body.mode-quick .quick-chip[data-mode="quick"] { display: inline-block; }
+  body.mode-analysis .quick-chip[data-mode="analysis"] { display: inline-block; }
+
+  /* Animations */
+  .fade-in { animation: fadeIn .3s ease-out; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+      <div class="logo">
+        <div class="logo-icon">B</div>
+        <h1><span>BIZ</span>Agent</h1>
+      </div>
+      <div class="subtitle">商务智能助手 v2.0</div>
+    </div>
+
+    <div class="sidebar-content">
+      <div class="sidebar-group">
+        <div class="sidebar-group-title">对话模式</div>
+        <div class="mode-pills" id="modeGroup">
+          <button class="mode-pill active" data-mode="quick">
+            <span class="icon">⚡</span>
+            <span>快速对话</span>
+          </button>
+          <button class="mode-pill" data-mode="analysis">
+            <span class="icon">📊</span>
+            <span>深度分析</span>
+          </button>
+        </div>
+        <button class="btn-new btn-new-lg" id="btnNewSession">+ 新建对话</button>
+      </div>
+
+      <div class="sidebar-group">
+        <div class="sidebar-group-title">
+          历史对话
+          <span style="display:inline-flex;gap:2px;align-items:center;">
+            <span class="refresh-btn" id="refreshHistory" title="刷新历史">&#8635;</span>
+            <span class="clear-btn" id="btnDeleteAll" title="清空所有历史">&#10005;</span>
+          </span>
+        </div>
+        <div class="history-list" id="historyList">
+          <div class="history-empty">暂无历史记录</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sidebar-footer">
+      <span class="status-dot online" id="statusDot"></span>
+      <span id="statusText">服务运行中</span>
+    </div>
+    <div class="sidebar-resizer" id="sidebarResizer"></div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main">
+    <button class="sidebar-expand-btn" id="sidebarCollapseMainBtn" title="收起侧栏">◀</button>
+    <button class="sidebar-expand-btn" id="sidebarExpandBtn" title="展开侧栏">☰</button>
+    <div class="topbar">
+      <button class="toggle-sidebar" id="toggleSidebar">&#9776;</button>
+      <h2 id="topbarTitle">BizAgent</h2>
+    </div>
+
+    <div class="chat-area" id="chatArea">
+      <!-- Welcome screen shown by JS -->
+    </div>
+
+    <div class="quick-bar" id="quickBar">
+      <span class="chart-toggle off" id="chartToggle">
+        <span id="chartToggleLabel">图表生成</span>
+      </span>
+      <button class="quick-chip" data-mode="quick" data-q="帮我查一下 A 产品的库存">查库存</button>
+      <button class="quick-chip" data-mode="quick" data-q="分析一下最近的销售情况">查销售情况</button>
+      <button class="quick-chip" data-mode="quick" data-q="查询技术部有哪些员工">找员工</button>
+      <button class="quick-chip" data-mode="quick" data-q="VIP 客户有哪些">找客户</button>
+      <button class="quick-chip" data-mode="analysis" data-q="分析一下 2025 年 Q1 的销售情况">销售分析</button>
+      <button class="quick-chip" data-mode="analysis" data-q="分析一下库存变动情况">库存变动</button>
+      <button class="quick-chip" data-mode="analysis" data-q="给我生成一份当前经营简报">简报生成</button>
+      <button class="quick-chip" data-mode="analysis" data-q="全面分析公司经营状况">全面评估</button>
+    </div>
+
+    <div class="input-area">
+      <div class="file-badge" id="fileBadge">
+        <span class="file-tag">
+          📎 <span id="fileNameDisplay"></span>
+          <span class="remove" id="removeFile">&times;</span>
+        </span>
+      </div>
+      <div class="input-wrap">
+        <textarea id="messageInput" rows="1" placeholder="输入您的问题…按 Enter 发送" maxlength="2000"></textarea>
+        <div class="input-actions">
+          <button class="btn-ia" title="上传文件" id="fileBtn">
+            📎
+            <input type="file" id="fileInput" accept=".txt,.csv,.json,.md,.pdf,.docx,.xlsx,.xls,.log,.xml,.yaml,.yml,.png,.jpg,.jpeg">
+          </button>
+          <button class="btn-ia send" id="sendBtn" title="发送">➤</button>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  function genId() {
+    if (crypto.randomUUID) return crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+    return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  }
+
+  const state = {
+    mode: 'quick',
+    sessionId: genId(),
+    fileData: null,
+    fileName: '',
+    loading: false,
+    chartEnabled: false,
+  };
+
+  // DOM
+  const chatArea = document.getElementById('chatArea');
+  const inputEl = document.getElementById('messageInput');
+  const sendBtn = document.getElementById('sendBtn');
+  const fileInput = document.getElementById('fileInput');
+  const fileBtn = document.getElementById('fileBtn');
+  const fileBadge = document.getElementById('fileBadge');
+  const fileNameDisplay = document.getElementById('fileNameDisplay');
+  const removeFileBtn = document.getElementById('removeFile');
+  const btnNewSession = document.getElementById('btnNewSession');
+  const modeGroup = document.getElementById('modeGroup');
+  const statusDot = document.getElementById('statusDot');
+  const statusText = document.getElementById('statusText');
+  const topbarTitle = document.getElementById('topbarTitle');
+  const toggleSidebar = document.getElementById('toggleSidebar');
+  const sidebar = document.getElementById('sidebar');
+
+  function updateSessionDisplay() {}
+  topbarTitle.textContent = 'BizAgent — 快速对话';
+  document.body.className = 'mode-quick';
+
+  // Desktop collapse/expand
+  const sidebarCollapseMainBtn = document.getElementById('sidebarCollapseMainBtn');
+  const sidebarExpandBtn = document.getElementById('sidebarExpandBtn');
+
+  sidebarCollapseMainBtn.addEventListener('click', function() {
+    sidebar.classList.add('collapsed');
+    document.body.classList.add('sidebar-hidden');
+  });
+
+  sidebarExpandBtn.addEventListener('click', function() {
+    sidebar.classList.remove('collapsed');
+    document.body.classList.remove('sidebar-hidden');
+  });
+
+  // Resizable sidebar
+  const sidebarResizer = document.getElementById('sidebarResizer');
+  let isResizing = false;
+
+  sidebarResizer.addEventListener('mousedown', function(e) {
+    e.preventDefault();
+    isResizing = true;
+    this.classList.add('active');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    const startX = e.clientX;
+    const startWidth = parseInt(getComputedStyle(sidebar).width, 10);
+
+    function onMove(e2) {
+      if (!isResizing) return;
+      var newWidth = Math.max(180, Math.min(500, startWidth + e2.clientX - startX));
+      document.documentElement.style.setProperty('--sidebar-width', newWidth + 'px');
+    }
+
+    function onUp() {
+      if (!isResizing) return;
+      isResizing = false;
+      sidebarResizer.classList.remove('active');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+
+  // Responsive sidebar toggle
+  toggleSidebar.addEventListener('click', function() {
+    sidebar.classList.toggle('mobile-open');
+  });
+  document.addEventListener('click', function(e) {
+    if (window.innerWidth <= 768 && sidebar.classList.contains('mobile-open') && !sidebar.contains(e.target) && !toggleSidebar.contains(e.target)) {
+      sidebar.classList.remove('mobile-open');
+    }
+  });
+
+  // Mode switching
+  modeGroup.addEventListener('click', function(e) {
+    const btn = e.target.closest('.mode-pill');
+    if (!btn) return;
+    const mode = btn.dataset.mode;
+    if (mode === state.mode) return;
+    state.mode = mode;
+    document.body.className = 'mode-' + mode;
+    // Switch mode = new conversation
+    state.sessionId = genId();
+    updateSessionDisplay();
+    chatArea.innerHTML = '';
+    state.fileData = null; state.fileName = '';
+    fileBadge.classList.remove('visible'); fileInput.value = '';
+    showWelcome();
+
+    modeGroup.querySelectorAll('.mode-pill').forEach(function(b) { b.classList.remove('active'); });
+    btn.classList.add('active');
+    var names = { quick: '快速对话', smart: '快速对话(旧)', analysis: '深度分析' };
+    topbarTitle.textContent = 'BizAgent — ' + (names[mode] || mode);
+    document.getElementById('chartToggle').classList.toggle('visible', mode === 'analysis');
+    // Update welcome description if welcome screen is visible
+    var ws = document.getElementById('welcomeScreen');
+    if (ws) {
+      var desc = document.getElementById('welcomeDesc');
+      if (desc) desc.textContent = getWelcomeText(mode);
+    }
+    if (window.innerWidth <= 768) sidebar.classList.remove('mobile-open');
+  });
+
+  // Session
+  btnNewSession.addEventListener('click', function() {
+    state.sessionId = genId();
+    updateSessionDisplay();
+    chatArea.innerHTML = '';
+    state.fileData = null; state.fileName = '';
+    fileBadge.classList.remove('visible'); fileInput.value = '';
+    showWelcome();
+    if (window.innerWidth <= 768) sidebar.classList.remove('mobile-open');
+  });
+
+  // Delete all history
+  document.getElementById('btnDeleteAll').addEventListener('click', async function() {
+    if (!confirm('确定要删除所有历史对话吗？此操作不可恢复。')) return;
+    try {
+      var resp = await fetch('/api/sessions', { method: 'DELETE' });
+      var result = await resp.json();
+      if (result.success) {
+        state.sessionId = genId();
+        updateSessionDisplay();
+        chatArea.innerHTML = '';
+        showWelcome();
+        loadHistory();
+      } else {
+        alert('删除失败');
+      }
+    } catch(e) {
+      alert('网络错误: ' + e.message);
+    }
+  });
+
+  // Chart toggle click
+  document.getElementById('chartToggle').addEventListener('click', function() {
+    state.chartEnabled = !state.chartEnabled;
+    this.classList.toggle('off', !state.chartEnabled);
+  });
+
+  // File
+  function handleFile(file) {
+    if (!file) return;
+    state.fileName = file.name;
+    fileNameDisplay.textContent = file.name;
+    fileBadge.classList.add('visible');
+    const reader = new FileReader();
+    reader.onload = function(e) { state.fileData = e.target.result.split(',')[1]; };
+    reader.readAsDataURL(file);
+  }
+  fileInput.addEventListener('change', function() { handleFile(fileInput.files[0]); });
+  fileBtn.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' || e.key === ' ') { fileInput.click(); e.preventDefault(); }
+  });
+  removeFileBtn.addEventListener('click', function() {
+    state.fileData = null; state.fileName = '';
+    fileBadge.classList.remove('visible'); fileInput.value = '';
+  });
+
+  // Drag and drop
+  const inputWrap = document.querySelector('.input-wrap');
+  inputWrap.addEventListener('dragover', function(e) { e.preventDefault(); this.style.borderColor = 'var(--blue)'; });
+  inputWrap.addEventListener('dragleave', function(e) { this.style.borderColor = ''; });
+  inputWrap.addEventListener('drop', function(e) {
+    e.preventDefault(); this.style.borderColor = '';
+    const f = e.dataTransfer.files[0];
+    if (f) handleFile(f);
+  });
+
+  // Quick action clicks
+  document.getElementById('quickBar').addEventListener('click', function(e) {
+    var chip = e.target.closest('.quick-chip');
+    if (!chip) return;
+    inputEl.value = chip.dataset.q;
+    inputEl.style.height = 'auto';
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
+    inputEl.focus();
+  });
+
+  // Send
+  function addMessage(role, content, extra) {
+    const div = document.createElement('div');
+    div.className = 'message ' + role;
+    const avatar = document.createElement('div');
+    avatar.className = 'msg-avatar';
+    avatar.textContent = role === 'user' ? 'U' : 'B';
+    div.appendChild(avatar);
+    const body = document.createElement('div');
+    body.className = 'msg-body';
+    if (extra && extra.fileName) {
+      body.innerHTML += '<div class="msg-file-badge">📎 ' + esc(extra.fileName) + '</div>';
+    }
+    body.innerHTML += '<p>' + esc(content) + '</p>';
+    div.appendChild(body);
+    chatArea.appendChild(div);
+    chatArea.scrollTop = chatArea.scrollHeight;
+  }
+
+  function esc(s) {
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function renderBizResponse(container, data) {
+    const d = data.data || data;
+    if (typeof d === 'string') { container.innerHTML = '<p>' + esc(d) + '</p>'; return; }
+    if (!d || typeof d !== 'object') { container.innerHTML = '<p>' + esc(JSON.stringify(data)) + '</p>'; return; }
+
+    var answerText = d.回答 || d.answer;
+    if (answerText !== undefined && answerText !== null) {
+      var answerPara = document.createElement('div');
+      answerPara.style.cssText = 'font-size:15px; line-height:1.8; color:var(--gray-800);';
+      var paragraphs = String(answerText).split('\n\n');
+      paragraphs.forEach(function(para) {
+        para = para.trim();
+        if (!para) return;
+        var p = document.createElement('p');
+        p.style.cssText = 'margin-bottom:8px;';
+        p.textContent = para;
+        answerPara.appendChild(p);
+      });
+      container.appendChild(answerPara);
+    }
+
+    var detailObj = d.详情 || d.details;
+    if (detailObj && typeof detailObj === 'object' && Object.keys(detailObj).length > 0) {
+      var detailToggle = document.createElement('div');
+      detailToggle.style.cssText = 'margin-top:' + (answerText ? '12px' : '0') + '; font-size:12px; color:var(--blue); cursor:pointer; user-select:none;';
+      detailToggle.textContent = '▶ 查看详细数据';
+      var detailContent = document.createElement('div');
+      detailContent.style.cssText = 'display:none; margin-top:8px;';
+      var detailDiv = renderObj(detailObj);
+      detailDiv.style.cssText = 'background:var(--gray-50); border-radius:6px; padding:12px; font-size:13px; line-height:1.6; border:1px solid var(--gray-200);';
+      detailContent.appendChild(detailDiv);
+      detailToggle.addEventListener('click', function() {
+        var expanded = detailContent.style.display !== 'none';
+        detailContent.style.display = expanded ? 'none' : 'block';
+        detailToggle.textContent = expanded ? '▶ 查看详细数据' : '▼ 收起详细数据';
+      });
+      container.appendChild(detailToggle);
+      container.appendChild(detailContent);
+    }
+
+    var leftover = {};
+    for (var key in d) {
+      if (!d.hasOwnProperty(key)) continue;
+      if (key === 'status' || key === 'answer' || key === 'details' || key === '回答' || key === '详情') continue;
+      leftover[key] = d[key];
+    }
+    if (Object.keys(leftover).length > 0) {
+      if (answerText) {
+        var suppWrap = document.createElement('div');
+        suppWrap.style.cssText = 'margin-top:12px; border-top:1px solid var(--gray-200); padding-top:10px;';
+        for (var key in leftover) {
+          var card = document.createElement('div');
+          card.className = 'biz-card';
+          var kl = document.createElement('div');
+          kl.className = 'k';
+          kl.textContent = fmtKey(key);
+          card.appendChild(kl);
+          var vl = document.createElement('div');
+          vl.className = 'v';
+          renderFieldValue(vl, leftover[key]);
+          card.appendChild(vl);
+          suppWrap.appendChild(card);
+        }
+        container.appendChild(suppWrap);
+      } else {
+        for (var key in leftover) {
+          var card = document.createElement('div');
+          card.className = 'biz-card';
+          var kl = document.createElement('div');
+          kl.className = 'k';
+          kl.textContent = fmtKey(key);
+          card.appendChild(kl);
+          var vl = document.createElement('div');
+          vl.className = 'v';
+          renderFieldValue(vl, leftover[key]);
+          card.appendChild(vl);
+          container.appendChild(card);
+        }
+      }
+    }
+  }
+
+  function renderFieldValue(container, val) {
+    if (val === null || val === undefined) { container.textContent = '-'; return; }
+    if (Array.isArray(val)) {
+      if (val.length === 0) { container.textContent = '暂无数据'; return; }
+      if (typeof val[0] === 'object') {
+        var wrap = document.createElement('div');
+        wrap.className = 'biz-table-wrap';
+        var tbl = document.createElement('table');
+        tbl.className = 'biz-table';
+        var thead = document.createElement('thead');
+        var tr = document.createElement('tr');
+        var headers = Object.keys(val[0]);
+        headers.forEach(function(h) {
+          var th = document.createElement('th');
+          th.textContent = fmtKey(h);
+          tr.appendChild(th);
+        });
+        thead.appendChild(tr);
+        tbl.appendChild(thead);
+        var tbody = document.createElement('tbody');
+        val.forEach(function(row) {
+          var r = document.createElement('tr');
+          headers.forEach(function(h) {
+            var td = document.createElement('td');
+            td.textContent = row[h] !== null && row[h] !== undefined ? String(row[h]) : '-';
+            r.appendChild(td);
+          });
+          tbody.appendChild(r);
+        });
+        tbl.appendChild(tbody);
+        wrap.appendChild(tbl);
+        container.appendChild(wrap);
+      } else {
+        container.textContent = val.join('、');
+      }
+      return;
+    }
+    if (typeof val === 'object') {
+      container.appendChild(renderObj(val));
+      return;
+    }
+    var isNum = typeof val === 'number' || (!isNaN(parseFloat(val)) && String(val).match(/^[\d,.]+$/));
+    if (isNum) { container.className += ' num'; }
+    container.textContent = val !== null && val !== undefined ? String(val) : '-';
+  }
+
+  function renderObj(obj) {
+    var div = document.createElement('div');
+    if (!obj || typeof obj !== 'object') { div.textContent = String(obj || '-'); return div; }
+    for (var k in obj) {
+      if (!obj.hasOwnProperty(k)) continue;
+      var line = document.createElement('div');
+      line.style.cssText = 'margin:3px 0; font-size:13px;';
+      var v = obj[k];
+      if (v !== null && v !== undefined && typeof v === 'object') {
+        var inner = renderObj(v);
+        line.innerHTML = '<strong>' + fmtKey(k) + ':</strong>';
+        line.appendChild(inner);
+      } else {
+        line.innerHTML = '<strong>' + fmtKey(k) + ':</strong> ' + esc(v !== null && v !== undefined ? String(v) : '-');
+      }
+      div.appendChild(line);
+    }
+    return div;
+  }
+
+  function fmtKey(k) {
+    var m = {
+      answer:'回答', details:'详情', summary:'摘要', analysis:'分析',
+      product:'产品', stock:'库存', warehouse:'仓库', unit:'单位',
+      last_updated:'更新时间', revenue:'营收', profit:'利润', cost:'成本',
+      margin:'利润率', month:'月份', period:'期间', total:'合计',
+      total_sales:'总销量', sales:'销量', amount:'数量',
+      总营收:'总营收', 增长率:'增长率', 利润率:'利润率',
+      热销产品:'热销产品', 改进建议:'改进建议',
+      当前状态:'当前状态', 问题列表:'问题列表', 行动项:'行动项',
+      关键指标:'关键指标', 趋势分析:'趋势分析', 建议:'建议',
+      回答:'回答', 详情:'详情',
+      total_stock:'总库存', product_count:'产品数', stock_status:'库存状态',
+      warehouse_distribution:'仓库分布', out_of_stock_products:'缺货产品',
+      low_stock_products:'低库存产品', avg_stock_per_product:'平均库存',
+      total_revenue:'总营收', total_cost:'总成本', total_profit:'总利润',
+      avg_margin:'平均利润率', max_revenue:'最高营收', max_revenue_month:'最高营收月',
+      min_revenue:'最低营收', min_revenue_month:'最低营收月',
+      avg_revenue:'平均营收', avg_cost:'平均成本', avg_profit:'平均利润',
+      months_analyzed:'分析月数', current_value:'当前值', previous_value:'上期值',
+      change:'变化量', previous_period:'上期', period:'期间',
+      best_selling_product:'最畅销产品', best_sales:'最高销量',
+      worst_selling_product:'最差产品', worst_sales:'最低销量',
+      avg_sales_per_product:'平均销量', product_rank:'产品排名',
+      proportion:'占比', total_sales:'总销量',
+      name:'姓名', department:'部门', position:'职位', salary:'薪资',
+      hire_date:'入职日期', status:'状态', employees:'员工',
+      employee_headcount:'员工部门统计', employee_salary_distribution:'薪资分布',
+      departments:'部门分布', total_employees:'总人数', avg_salary_all:'全员平均薪资',
+      max_salary:'最高薪资', min_salary:'最低薪资', count:'人数',
+      salary_sum:'薪资总额', range:'区间', names:'姓名',
+      技术部:'技术部', 市场部:'市场部', 销售部:'销售部',
+      财务部:'财务部', 人事部:'人事部',
+      customers:'客户', tier:'等级', region:'地区',
+      total_spent:'累计消费', avg_spent:'平均消费',
+      last_purchase:'最后购买', contact:'联系方式',
+      customer_tier_analysis:'客户分层分析', customer_region_analysis:'客户地区分析',
+      tiers:'等级分布', total_customers:'客户总数', total_spent_all:'总消费额',
+      regions:'地区分布', spent_sum:'消费总额',
+      financial_mom:'财务环比', financial_summary:'营收汇总',
+      sales_comparison:'销售对比', sales_extreme:'销售极值',
+      inventory_analysis:'库存分析',
+      chart_url:'图表', chart_type:'类型', title:'标题',
+    };
+    return m[k] || k;
+  }
+
+  function addResponse(data) {
+    const div = document.createElement('div');
+    div.className = 'message assistant fade-in';
+    const avatar = document.createElement('div');
+    avatar.className = 'msg-avatar';
+    avatar.textContent = 'B';
+    div.appendChild(avatar);
+    const body = document.createElement('div');
+    body.className = 'msg-body';
+    if (data.error) {
+      body.innerHTML = '<p style="color:var(--red)">请求失败: ' + esc(data.error) + '</p>';
+      body.classList.add('error');
+    } else {
+      renderBizResponse(body, data);
+      if (data.charts && Array.isArray(data.charts) && data.charts.length > 0) {
+        var chartSection = document.createElement('div');
+        chartSection.style.cssText = 'margin-top:12px; border-top:1px solid var(--gray-200); padding-top:12px;';
+        data.charts.forEach(function(ch) {
+          if (ch.chart_url) {
+            var chartWrap = document.createElement('div');
+            chartWrap.style.cssText = 'margin:8px 0; text-align:center;';
+            var img = document.createElement('img');
+            img.src = ch.chart_url;
+            img.alt = ch.title || '图表';
+            img.style.cssText = 'max-width:100%; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.1);';
+            img.onerror = function() { this.style.display = 'none'; };
+            chartWrap.appendChild(img);
+            chartSection.appendChild(chartWrap);
+          }
+        });
+        if (chartSection.children.length > 0) body.appendChild(chartSection);
+      }
+    }
+    div.appendChild(body);
+    chatArea.appendChild(div);
+    chatArea.scrollTop = chatArea.scrollHeight;
+  }
+
+  function showLoading() {
+    var d = document.createElement('div');
+    d.className = 'message assistant'; d.id = 'loadingMsg';
+    var a = document.createElement('div');
+    a.className = 'msg-avatar'; a.textContent = 'B';
+    d.appendChild(a);
+    var b = document.createElement('div');
+    b.className = 'msg-body';
+    b.innerHTML = '<div class="loading-dots"><span></span><span></span><span></span></div>';
+    d.appendChild(b);
+    chatArea.appendChild(d);
+    chatArea.scrollTop = chatArea.scrollHeight;
+  }
+  function hideLoading() { var e = document.getElementById('loadingMsg'); if (e) e.remove(); }
+
+  function getWelcomeText(mode) {
+    return mode === 'analysis'
+      ? '维度分析并生成可视化图表'
+      : '极速响应日常查询';
+  }
+
+  function showWelcome() {
+    var d = document.createElement('div');
+    d.className = 'welcome-screen';
+    d.id = 'welcomeScreen';
+    d.innerHTML = [
+      '<div class="w-icon">B</div>',
+      '<h2>BizAgent</h2>',
+      '<p id="welcomeDesc">' + getWelcomeText(state.mode) + '</p>',
+    ].join('');
+    chatArea.appendChild(d);
+  }
+  showWelcome();
+
+  async function sendMessage() {
+    if (state.loading) return;
+    var text = inputEl.value.trim();
+    if (!text && !state.fileData) return;
+
+    state.loading = true; sendBtn.disabled = true;
+
+    var ws = document.getElementById('welcomeScreen');
+    if (ws) ws.remove();
+
+    addMessage('user', text || '(上传文件)', state.fileName ? {fileName: state.fileName} : null);
+    inputEl.value = ''; inputEl.style.height = 'auto';
+    showLoading();
+
+    var msg = text || '请分析上传的文件';
+    if (state.mode === 'analysis' && state.chartEnabled) {
+      if (msg.slice(-1) !== '。') msg += '。';
+      msg += '生成图表。';
+    }
+    var payload = {
+      message: msg,
+      mode: state.mode,
+      session_id: state.sessionId,
+      enable_persistence: true,
+    };
+    if (state.fileData) {
+      payload.file_content = state.fileData;
+      payload.file_name = state.fileName;
+      state.fileData = null; state.fileName = '';
+      fileBadge.classList.remove('visible'); fileInput.value = '';
+    }
+    if (state.mode === 'analysis') {
+      payload.generate_chart = state.chartEnabled;
+    }
+
+    try {
+      var resp = await fetch('/chat', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
+      var result = await resp.json();
+      hideLoading();
+      addResponse(result);
+    } catch (err) {
+      hideLoading();
+      addResponse({ error: err.message || '网络错误' });
+    }
+    state.loading = false; sendBtn.disabled = false; inputEl.focus();
+  }
+
+  sendBtn.addEventListener('click', sendMessage);
+  inputEl.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  });
+  inputEl.addEventListener('input', function() {
+    this.style.height = 'auto'; this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+  });
+
+  // Health check
+  async function checkHealth() {
+    try {
+      var r = await fetch('/api/health');
+      var d = await r.json();
+      statusDot.className = 'status-dot online';
+      statusText.textContent = '服务运行中 (' + d.active_sessions + ' 会话)';
+    } catch(e) {
+      statusDot.className = 'status-dot offline';
+      statusText.textContent = '服务离线';
+    }
+  }
+  checkHealth(); setInterval(checkHealth, 15000);
+
+  // History
+  var historyList = document.getElementById('historyList');
+  var refreshBtn = document.getElementById('refreshHistory');
+
+  function timeAgo(iso) {
+    if (!iso) return '';
+    var t = new Date(iso);
+    var now = new Date();
+    var diff = Math.floor((now - t) / 1000);
+    if (diff < 60) return '刚刚';
+    if (diff < 3600) return Math.floor(diff / 60) + ' 分钟前';
+    if (diff < 86400) return Math.floor(diff / 3600) + ' 小时前';
+    if (diff < 2592000) return Math.floor(diff / 86400) + ' 天前';
+    return t.toLocaleDateString('zh-CN');
+  }
+
+  function renderHistory(sessions) {
+    historyList.innerHTML = '';
+    if (!sessions || sessions.length === 0) {
+      historyList.innerHTML = '<div class="history-empty">暂无历史记录</div>';
+      return;
+    }
+    sessions.forEach(function(s) {
+      var item = document.createElement('div');
+      item.className = 'history-item';
+      var sid = s.id || s.session_id;
+      item.setAttribute('data-sid', sid);
+      if (sid === state.sessionId) item.classList.add('active');
+
+      var preview = document.createElement('div');
+      preview.className = 'h-preview';
+      preview.textContent = s.preview || '(空对话)';
+
+      var meta = document.createElement('div');
+      meta.className = 'h-meta';
+
+      var time = document.createElement('span');
+      time.textContent = timeAgo(s.updated_at);
+
+      var count = document.createElement('span');
+      count.className = 'h-count';
+      count.textContent = (s.message_count || 0) + ' 条';
+
+      meta.appendChild(time);
+      meta.appendChild(count);
+
+      var delBtn = document.createElement('span');
+      delBtn.className = 'h-del';
+      delBtn.textContent = '×';
+      delBtn.title = '删除此对话';
+      delBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        deleteSession(sid);
+      });
+      meta.appendChild(delBtn);
+
+      item.appendChild(preview);
+      item.appendChild(meta);
+
+      item.addEventListener('click', function() { loadSession(sid); });
+      historyList.appendChild(item);
+    });
+  }
+
+  async function loadHistory() {
+    refreshBtn.classList.add('spin');
+    try {
+      var resp = await fetch('/api/history');
+      var result = await resp.json();
+      if (result.success && result.data) {
+        renderHistory(result.data);
+      }
+    } catch(e) {
+      console.warn('加载历史失败:', e);
+    }
+    refreshBtn.classList.remove('spin');
+  }
+
+  async function deleteSession(sessionId) {
+    if (!confirm('确定要删除此对话吗？')) return;
+    try {
+      var resp = await fetch('/api/sessions/' + sessionId, { method: 'DELETE' });
+      var result = await resp.json();
+      if (result.success || result.deleted) {
+        if (sessionId === state.sessionId) {
+          state.sessionId = genId();
+          updateSessionDisplay();
+          chatArea.innerHTML = '';
+          showWelcome();
+        }
+        loadHistory();
+      }
+    } catch(e) {
+      console.warn('删除失败:', e);
+    }
+  }
+
+  function renderHistoryMessage(msg) {
+    var div = document.createElement('div');
+    div.className = 'message ' + msg.role;
+    var avatar = document.createElement('div');
+    avatar.className = 'msg-avatar';
+    avatar.textContent = msg.role === 'user' ? 'U' : 'B';
+    div.appendChild(avatar);
+    var body = document.createElement('div');
+    body.className = 'msg-body';
+    if (msg.role === 'user') {
+      body.innerHTML = '<p>' + esc(msg.content) + '</p>';
+    } else {
+      try {
+        var parsed = JSON.parse(msg.content);
+        renderBizResponse(body, parsed);
+      } catch(e) {
+        body.innerHTML = '<p>' + esc(msg.content) + '</p>';
+      }
+    }
+    div.appendChild(body);
+    return div;
+  }
+
+  async function loadSession(sessionId) {
+    state.sessionId = sessionId;
+    updateSessionDisplay();
+
+    try {
+      var resp = await fetch('/api/sessions/' + sessionId + '/messages?limit=200');
+      var result = await resp.json();
+      if (!result.success) {
+        chatArea.innerHTML = '<div class="welcome-screen"><p style="color:var(--red)">加载失败: ' + esc(result.error) + '</p></div>';
+        return;
+      }
+
+      chatArea.innerHTML = '';
+      var ws = document.getElementById('welcomeScreen');
+      if (ws) ws.remove();
+
+      (result.data || []).forEach(function(msg) {
+        var el = renderHistoryMessage(msg);
+        chatArea.appendChild(el);
+      });
+      chatArea.scrollTop = chatArea.scrollHeight;
+
+      historyList.querySelectorAll('.history-item').forEach(function(el) {
+        el.classList.toggle('active', el.getAttribute('data-sid') === sessionId);
+      });
+
+    } catch(e) {
+      chatArea.innerHTML = '<div class="welcome-screen"><p style="color:var(--red)">网络错误: ' + esc(e.message) + '</p></div>';
+    }
+  }
+
+  btnNewSession.addEventListener('click', function() {
+    setTimeout(loadHistory, 500);
+  });
+
+  refreshBtn.addEventListener('click', loadHistory);
+
+  loadHistory();
+})();
+</script>
+</body>
+</html>
