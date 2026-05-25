@@ -106,15 +106,24 @@ _NUMBER_PATTERN = re.compile(r"([\d,]+(?:\.\d+)?)")
 def _extract_numeric_claims(text: str) -> list[dict]:
     """从自然语言文本中提取带上下文的数字声明"""
     claims = []
+    # 注意：　 是全角空格，\s 不匹配，所以用 [\s　] 或 [：:：]
+    # 分隔符可能为 ：: 空格 全角空格 或直接相连
+    _sep = r"[：:\s　]*[约为达]?"
     patterns = [
-        (r"(?:销量|销售|售出|总销量|销售额)\s*[约为]?\s*([\d,]+)", "sales"),
-        (r"(?:营收|收入|revenue|营业收入)\s*[约为达]?\s*([\d,]+)", "revenue"),
-        (r"(?:利润|盈利|净利润|毛利润)\s*[约为达]?\s*([\d,]+)", "profit"),
-        (r"(?:成本|营业成本)\s*[约为达]?\s*([\d,]+)", "cost"),
-        (r"(?:库存|存货|存量)\s*[约为达]?\s*([\d,]+)", "stock"),
-        (r"(?:占比|份额)\s*[约为达]?\s*([\d,.]+)\s*%", "share_pct"),
-        (r"(?:增长|下降|涨幅|跌幅)\s*[约为达]?\s*([\d,.]+)\s*%", "growth_pct"),
-        (r"(?:利润率|毛利率)\s*[约为达]?\s*([\d,.]+)\s*%", "margin_pct"),
+        # "总销售额：2297200.86" 或 "销售额 836154.0" 或 "销售 100万"
+        (rf"(?:总)?(?:销量?|销售(?:额)?){_sep}\s*([\d,]+(?:\.\d+)?)", "sales"),
+        # "总利润：286397.02" 或 "（利润 145455.0）" 或 "盈利 50000"
+        (rf"(?:总)?(?:利润|盈利)(?:额|)?{_sep}\s*([\d,]+(?:\.\d+)?)", "profit"),
+        # "平均利润率：12.03" 或 "毛利率 15.5%"
+        (rf"(?:平均)?(?:利润率|毛利率){_sep}\s*([\d,]+(?:\.\d+)?)\s*%?", "margin_pct"),
+        # "占比 23.5%" / "份额 10%"
+        (rf"(?:占比|份额){_sep}\s*([\d,]+(?:\.\d+)?)\s*%", "share_pct"),
+        # "增长 12.5%" / "下降 3.2%"
+        (rf"(?:增长|下降|涨幅|跌幅){_sep}\s*([\d,]+(?:\.\d+)?)\s*%", "growth_pct"),
+        # "营收 500万" / "收入 1000"
+        (rf"(?:营收|收入|营业收入){_sep}\s*([\d,]+(?:\.\d+)?)", "revenue"),
+        # "成本 300" / "营业成本 200"
+        (rf"(?:成本|营业成本){_sep}\s*([\d,]+(?:\.\d+)?)", "cost"),
     ]
     for pattern, label in patterns:
         for m in re.finditer(pattern, text):
@@ -128,17 +137,27 @@ def _extract_numeric_claims(text: str) -> list[dict]:
 
 
 _API_VALUE_MAP = {
-    "revenue": ("get_financial_report", "data", "revenue"),
+    # 企业版路径
+    "sales":   ("get_sales_summary",    "data", "total_sales"),
     "profit":  ("get_financial_report", "data", "profit"),
+    "revenue": ("get_financial_report", "data", "revenue"),
     "cost":    ("get_financial_report", "data", "cost"),
     "stock":   ("query_inventory",      "data", "stock"),
-    "sales":   ("get_sales_summary",    "data", "total_sales"),
+    "margin_pct": ("get_financial_report", "data", "margin"),
+}
+
+_SUPERSTORE_VALUE_MAP = {
+    "sales":       ("superstore_overview", "data", "total_sales"),
+    "profit":      ("superstore_overview", "data", "total_profit"),
+    "margin_pct":  ("superstore_overview", "data", "avg_margin_pct"),
+    "cost":        ("superstore_overview", "data", "total_cost"),
 }
 
 
-def _lookup_api_value(api_results: dict, label: str) -> Optional[float]:
+def _lookup_api_value(api_results: dict, label: str, is_superstore: bool = False) -> Optional[float]:
     """将文本标签映射回 API 原始数值"""
-    path = _API_VALUE_MAP.get(label)
+    map_ = _SUPERSTORE_VALUE_MAP if is_superstore else _API_VALUE_MAP
+    path = map_.get(label)
     if not path:
         return None
     obj = api_results.get(path[0], {})
@@ -150,12 +169,12 @@ def _lookup_api_value(api_results: dict, label: str) -> Optional[float]:
     return float(obj) if isinstance(obj, (int, float)) else None
 
 
-def _fact_check(llm_answer: str, api_results: dict) -> list[dict]:
+def _fact_check(llm_answer: str, api_results: dict, is_superstore: bool = False) -> list[dict]:
     """交叉核验 LLM 输出与 API 原始数据，返回不匹配项列表"""
     mismatches = []
     claims = _extract_numeric_claims(llm_answer)
     for claim in claims:
-        api_val = _lookup_api_value(api_results, claim["label"])
+        api_val = _lookup_api_value(api_results, claim["label"], is_superstore=is_superstore)
         if api_val is None:
             continue
         llm_val = claim["value"]
@@ -294,12 +313,13 @@ class ReflectionPipeline:
         )
 
     @staticmethod
-    def run_layer3(llm_output: dict, api_results: dict) -> LayerResult:
+    def run_layer3(llm_output: dict, api_results: dict, is_superstore: bool = False) -> LayerResult:
         """
         L3 — LLM 输出事实验证。
 
         从 answer 字段提取数字并与 API 原始数据交叉比对。
         偏差 >= 10% 标记为幻觉。
+        is_superstore=True 时使用 superstore 数据路径匹配。
         """
         answer = ""
         if isinstance(llm_output, dict):
@@ -307,7 +327,7 @@ class ReflectionPipeline:
         elif isinstance(llm_output, str):
             answer = llm_output
 
-        mismatches = _fact_check(answer, api_results)
+        mismatches = _fact_check(answer, api_results, is_superstore=is_superstore)
 
         if mismatches:
             issues = [f"事实不匹配: {m['text']} (LLM={m.get('llm_value', '?')}, API={m.get('api_value', '?')}, {m['reason']})" for m in mismatches]
@@ -362,14 +382,15 @@ class ReflectionPipeline:
     def run(cls, intent: str, confidence: float, params: dict,
             template: Optional[dict], api_results: dict,
             llm_output: Optional[dict] = None,
-            skip_l3: bool = False) -> ReflectionResult:
+            skip_l3: bool = False,
+            is_superstore: bool = False) -> ReflectionResult:
         """端到端执行四层反射"""
         l1 = cls.run_layer1(intent, confidence, params, template)
         l2 = cls.run_layer2(api_results)
 
         l3 = None
         if llm_output is not None and not skip_l3:
-            l3 = cls.run_layer3(llm_output, api_results)
+            l3 = cls.run_layer3(llm_output, api_results, is_superstore=is_superstore)
         elif not skip_l3:
             l3 = LayerResult(layer_id=3, passed=True, score=1.0)
 

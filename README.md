@@ -90,30 +90,66 @@ python api_server.py
 ## 架构
 
 ```
-api_server.py          FastAPI 服务（对话/会话/任务/文件端点）
-  └── BizAgent         核心 Agent
-        ├── chat_quick()              快速问答（函数调用+工具执行）
-        ├── chat_with_analysis()      深度分析（意图→API→分析→图表→报告）
-        ├── superstore_api.py         11 个数据查询函数与工具定义
-        ├── superstore_analysis.py    统计分析算子
-        ├── visualizer.py             图表生成（折线图/柱状图/饼图）
-        ├── session_store.py          SQLite 会话持久化
-        └── task_tracker.py           任务执行追踪
+api_server.py              FastAPI 服务（对话/会话/任务/文件/评估端点）
+  └── BizAgent             核心 Agent
+        ├── chat_quick()              快速问答（~3-6s，Function Calling + 摘要回复）
+        │   └── 新增: LLM 意图 fallback + Reflection 幻觉检测
+        ├── chat_with_analysis()      深度分析（~5-12s，意图→API→分析→图表→报告）
+        │   └── 新增: Superstore 专属事实核验路径
+        ├── chat_with_intent()        意图驱动（关键词分类 + 参数提取 + 模板输出）
+        ├── chat_multi_turn()         多轮对话（summary 上下文裁剪策略）
+        ├── chat_with_tools()         Function Calling（自动识别+调用+格式化）
+        ├── chat()                    基础对话（三层 Prompt + JSON 约束）
+        │
+        ├── superstore_api.py         11 个数据查询函数与 OpenAI 式工具定义
+        ├── superstore_analysis.py    6 大分析算子（品类占比/地区对比/趋势/盈利等）
+        ├── intent_engine.py          意图引擎（6 类意图 + 参数提取 + 模板映射）
+        ├── reflection.py             四层反射校验管线（L1 意图/L2 数据/L3 事实/L4 综合）
+        ├── visualizer.py             图表生成（折线/柱状/分组柱状/饼图）
+        ├── session_store.py          SQLite 会话持久化 + 评估监控日志
+        ├── context_manager.py        多轮上下文管理（fixed/summary 策略）
+        ├── task_tracker.py           任务执行追踪
+        └── exceptions.py             分级异常定义（Auth/Timeout/RateLimit 等）
 static/index.html      Web 前端界面
 ```
 
 ### 对话模式
 
-| 模式 | 端到端延迟 | 适用场景 |
-|------|-----------|---------|
-| 快速对话 | ~3-6s | 日常数据查询、指标确认 |
-| 深度分析 | ~5-12s | 复杂分析、报告生成、图表可视化 |
+| 模式 | 方法 | 端到端延迟 | 适用场景 |
+|------|------|-----------|---------|
+| 快速对话 | `chat_quick()` | ~3-6s | 日常数据查询、指标确认、快速问答 |
+| 深度分析 | `chat_with_analysis()` | ~5-12s | 复杂分析、多维度对比、图表可视化、报告生成 |
+| 意图驱动 | `chat_with_intent()` | ~4-8s | 结构化查询、模板化报表输出 |
+| 多轮对话 | `chat_multi_turn()` | ~3-6s | 连续追问、上下文相关的分析会话 |
+| 工具调用 | `chat_with_tools()` | ~4-7s | Function Calling 方式的数据查询 |
+| 基础对话 | `chat()` | ~3-5s | 三层 Prompt + JSON 约束的简单问答 |
 
 ### 数据层
 
 - **Superstore Sales**（Kaggle）：9,994 条交易记录，21 个字段
 - **数据表**：`superstore_orders`（SQLite，自动从 Kaggle 下载并导入）
 - 首次查询时自动完成数据加载，无需手动操作
+
+### 质量保障 — 四层反射校验管线
+
+BizAgent 内置 `ReflectionPipeline`，在每次分析后自动执行四层检查：
+
+| 层级 | 检查项 | 降级策略 |
+|------|--------|---------|
+| L1 意图置信度 | 用户意图是否明确、参数是否完整 | < 0.2 → 追问用户 |
+| L2 数据充分性 | API 返回数据是否为空或不完整 | < 0.5 → 标记不完整 |
+| L3 事实验证 | LLM 输出数字与 API 原始数据交叉核验（偏差 >10% 标记幻觉） | 有偏差 → 标记幻觉 |
+| L4 综合决策 | 加权综合评分（W1=0.35, W2=0.30, W3=0.35） | < 0.4 → 附加置信度警告<br>< 0.2 → 降级 status |
+
+**覆盖范围**：深度分析和快速对话两种模式均集成了 Reflection 检测，评估结果持久化至 `eval_logs` 表，支持通过 `/api/eval/stats` 监控幻觉率和系统表现。
+
+### 最新改进亮点
+
+- **LLM 意图分类 Fallback**：当关键词无法匹配用户问题时，自动调用 LLM 进行泛化意图分类，提升长尾问题的覆盖率
+- **快速对话幻觉检测**：Quick 模式新增 Reflection L3 事实验证，快速问答同样具备数字核验能力
+- **Superstore 专属事实核验路径**：Reflection 新增 `_SUPERSTORE_VALUE_MAP`，精准映射 Superstore 数据字段路径
+- **意图匹配精准度优化**：调整关键词规则——分离子类/品类触发、增加"哪个区""前10"等常见口语、避免"年""客户"单字误触
+- **数据安全加固**：`_summarize_tool_results` 增加类型检查和空值判断，防止意外数据格式导致崩溃
 
 ## API 使用
 
@@ -157,21 +193,22 @@ DELETE /api/sessions/{session_id}        # 删除会话
 BizAgent/
 ├── api_server.py                  FastAPI 服务（端点和路由）
 ├── src/minimal_agent/
-│   ├── biz_agent.py               核心 Agent（对话编排）
+│   ├── biz_agent.py               核心 Agent（对话编排，6 种对话模式）
 │   ├── superstore_api.py          Superstore 数据 API（11 个查询函数）
-│   ├── superstore_analysis.py     分析算子
+│   ├── superstore_analysis.py     分析算子（占比/环比/趋势/盈利分析）
 │   ├── superstore_loader.py       数据集自动下载与导入
 │   ├── enterprise_db.py           SQLite 数据库层
-│   ├── visualizer.py              图表生成
-│   ├── intent_engine.py           意图识别引擎
-│   ├── analysis_ops.py            分析算子（旧版）
+│   ├── visualizer.py              图表生成（折线/柱状/饼图/分组柱状图）
+│   ├── intent_engine.py           意图识别引擎（关键词+参数提取+模板映射）
+│   ├── reflection.py              四层反射校验管线（意图/数据/事实/综合）
+│   ├── analysis_ops.py            通用分析算子
 │   ├── prompts.py                 Prompt 模板
-│   ├── context_manager.py         上下文管理
-│   ├── session_store.py           SQLite 会话持久化
+│   ├── context_manager.py         上下文管理（summary 策略）
+│   ├── session_store.py           SQLite 会话持久化 + 评估日志
 │   ├── task_tracker.py            任务执行追踪
-│   ├── mock_enterprise_api.py     企业 API 函数定义
+│   ├── mock_enterprise_api.py     企业 API 函数定义（旧版）
 │   ├── response_builder.py        响应格式化
-│   └── exceptions.py              异常定义
+│   └── exceptions.py              分级异常定义
 ├── static/index.html              Web 前端
 ├── charts/                        自动生成的图表
 └── data/                          持久化数据

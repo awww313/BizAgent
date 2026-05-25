@@ -482,7 +482,7 @@ class BizAgent:
             data = tr.get("data", {})
             func_name = tr.get("_func_name", "")
             # superstore_by_category
-            if "categories" in data:
+            if "categories" in data and data["categories"] and isinstance(data["categories"][0], dict):
                 cats = data["categories"]
                 rows = [f"{c['category']}: {c['total_sales']:.1f} 美元（利润 {c['total_profit']:.1f}）" for c in cats[:5]]
                 parts.append("各品类销售情况：\n" + "\n".join(rows))
@@ -492,7 +492,7 @@ class BizAgent:
                 rows = [f"{s['sub_category']}: {s['total_sales']:.1f} 美元（利润率 {s.get('avg_margin_pct', 0):.1f}%）" for s in subs[:8]]
                 parts.append("子类别明细：\n" + "\n".join(rows))
             # superstore_by_region
-            if "regions" in data:
+            if "regions" in data and data["regions"] and isinstance(data["regions"][0], dict):
                 regs = data["regions"]
                 rows = [f"{r['region']}: {r['total_sales']:.1f} 美元" for r in regs[:5]]
                 parts.append("各区域销售情况：\n" + "\n".join(rows))
@@ -515,10 +515,10 @@ class BizAgent:
                     rows = [f"{i.get('product_name','?')[:20]}: {i.get('total_sales',0):.1f} 美元（利润 {i.get('total_profit',0):.1f}）" for i in items[:5]]
                     parts.append(f"{label}排名：\n" + "\n".join(rows))
             # superstore_overview
-            for key in ("total_sales", "total_profit", "avg_margin", "total_orders", "total_customers"):
+            for key in ("total_sales", "total_profit", "avg_margin_pct", "avg_margin", "total_orders", "total_customers"):
                 if key in data:
                     v = data[key]
-                    label_map = {"total_sales": "总销售额", "total_profit": "总利润", "avg_margin": "平均利润率", "total_orders": "订单总数", "total_customers": "客户总数"}
+                    label_map = {"total_sales": "总销售额", "total_profit": "总利润", "avg_margin_pct": "平均利润率", "avg_margin": "平均利润率", "total_orders": "订单总数", "total_customers": "客户总数"}
                     label = label_map.get(key, key)
                     parts.append(f"{label}：{v}")
             # superstore_by_state
@@ -703,7 +703,7 @@ class BizAgent:
         _start_time = time.perf_counter()
         _retry_count = 0
         if self.data_source == "superstore":
-            _intent_tasks = self._match_superstore_intent(user_input.lower())
+            _intent_tasks = self._match_superstore_intent(user_input.lower(), use_llm_fallback=True)
             _intent_apis = [t["api"] for t in _intent_tasks] if _intent_tasks else ["superstore_overview"]
         else:
             _intent_apis = []
@@ -729,6 +729,7 @@ class BizAgent:
             self._quick_tokens += usage.get("total_tokens", 0)
 
             # 处理工具调用
+            tool_results_data = []
             if tool_calls:
                 assistant_msg = {"role": "assistant", "content": content or None}
                 if tool_calls:
@@ -762,6 +763,32 @@ class BizAgent:
             # 清理响应中的函数调用标记等非自然语言内容
             content = self._clean_response_text(content)
 
+            # Quick 模式幻觉检测
+            _has_hallucination = False
+            _hallucination_detail = None
+            _reflection_score = None
+            if tool_calls:
+                try:
+                    _api_results = {}
+                    for _item in tool_results_data:
+                        _copy = dict(_item)
+                        _fn = _copy.pop("_func_name", "unknown")
+                        _api_results[_fn] = _copy
+                    _reflection = ReflectionPipeline.run(
+                        intent="superstore_quick", confidence=1.0,
+                        params={}, template=None,
+                        api_results=_api_results,
+                        llm_output={"answer": content},
+                        skip_l3=False,
+                        is_superstore=True,
+                    )
+                    if _reflection.l3 and _reflection.l3.issues:
+                        _has_hallucination = True
+                        _hallucination_detail = json.dumps(_reflection.l3.issues, ensure_ascii=False)[:500]
+                    _reflection_score = _reflection.overall_confidence
+                except Exception as e:
+                    logger.warning("[Quick/Reflection] 幻觉检测失败: %s", e)
+
             # 记入历史
             self._quick_ctx.add_assistant(content)
 
@@ -779,6 +806,9 @@ class BizAgent:
                         session_id=self.session_id, mode="quick",
                         user_input=user_input[:200], intent=_intent_label,
                         latency_ms=_latency, retry_count=_retry_count,
+                        hallucination=_has_hallucination,
+                        hallucination_detail=_hallucination_detail,
+                        reflection_score=_reflection_score,
                         status="success", model_response=content[:500],
                     )
                 except Exception as e:
@@ -1208,7 +1238,7 @@ class BizAgent:
         if tracker:
             tracker.start_step("intent", "关键词匹配")
         text = user_input.lower()
-        api_tasks = self._match_superstore_intent(text)
+        api_tasks = self._match_superstore_intent(text, use_llm_fallback=True)
         if tracker:
             tracker.end_step("success", f"匹配到 {len(api_tasks)} 个 API: {[t['api'] for t in api_tasks]}")
 
@@ -1358,6 +1388,7 @@ API 查询结果：
                 intent="superstore_analysis", confidence=1.0,
                 params={}, template=None,
                 api_results=api_results, llm_output=output, skip_l3=False,
+                is_superstore=True,
             )
             if _reflection.l3 and _reflection.l3.issues:
                 _has_hallucination = True
@@ -1393,37 +1424,103 @@ API 查询结果：
 
         return final
 
-    def _match_superstore_intent(self, text: str) -> list[dict]:
+    def _llm_classify_intent(self, text: str) -> list[dict]:
+        """使用 LLM 对用户输入进行意图分类（关键词匹配的泛化补充）。"""
+        INTENT_DESCS = {
+            "superstore_overview": "整体概况：总销售额、总利润、利润率等宏观指标",
+            "superstore_by_category": "按品类分析：Technology、Furniture、Office Supplies 的销售和利润",
+            "superstore_by_subcategory": "按子类别分析：各品类下的子类别表现",
+            "superstore_by_region": "按区域分析：East、West、Central、South 各区域对比",
+            "superstore_by_segment": "按客户群分析：Consumer、Corporate、Home Office 消费特征",
+            "superstore_monthly_trend": "月度趋势：按月分析销售额和利润变化趋势",
+            "superstore_top_products": "畅销产品：销售额排名前列的产品",
+            "superstore_loss_products": "亏损产品：利润为负的产品",
+            "superstore_by_state": "按州分布：各州的销售额分布",
+            "superstore_by_ship_mode": "按配送方式分析：不同配送模式的利润贡献",
+            "superstore_by_year": "按年度分析：每年的销售和利润变化",
+        }
+        api_lines = "\n".join(f"- {k}: {v}" for k, v in INTENT_DESCS.items())
+        system_prompt = (
+            f"你是一个意图分类器。根据用户的提问，从以下 API 中选择最相关的 1-3 个来回答问题：\n\n"
+            f"{api_lines}\n\n"
+            f"只输出 JSON 数组，例如 [\"superstore_overview\", \"superstore_by_category\"]，不要其他内容。"
+        )
+        try:
+            resp = self._call_api(
+                [{"role": "system", "content": system_prompt},
+                 {"role": "user", "content": f"用户问题：{text}"}],
+                use_json_mode=False, max_tokens=200,
+            )
+            content = resp["choices"][0]["message"]["content"].strip()
+            # 提取 JSON 数组
+            start = content.find("[")
+            end = content.rfind("]")
+            if start != -1 and end != -1:
+                content = content[start:end + 1]
+            api_names = json.loads(content)
+            if not isinstance(api_names, list):
+                return []
+            tasks = []
+            seen = set()
+            for name in api_names:
+                if name in SUPERSTORE_FUNCTION_MAP and name not in seen:
+                    seen.add(name)
+                    tasks.append({"api": name, "args": {}})
+            if tasks:
+                logger.info("[Intent] LLM 分类结果: %s", [t["api"] for t in tasks])
+            return tasks
+        except Exception as e:
+            logger.warning("[Intent] LLM 意图分类失败: %s", e)
+            return []
+
+    def _match_superstore_intent(self, text: str, use_llm_fallback: bool = False) -> list[dict]:
         """
         通过关键词匹配决定调用哪些 Superstore API。
+
+        use_llm_fallback=True 时，当关键词完全匹配不到则尝试 LLM 泛化分类。
 
         Returns:
             [{"api": "superstore_by_category", "args": {}}, ...]
         """
         intent_map = [
-            (["类", "category", "品类", "类别", "家具", "furniture", "办公", "技术", "产品类别"],
-             [{"api": "superstore_by_category", "args": {}},
-              {"api": "superstore_by_subcategory", "args": {}}]),
-            (["region", "区域", "地区", "东部", "西部", "南部", "中部", "east", "west", "south", "central"],
+            # 品类 — 仅 by_category，去掉自动触发子类
+            (["品类", "类别", "产品类别", "类"],
+             [{"api": "superstore_by_category", "args": {}}]),
+            (["category", "家具", "furniture", "办公", "technology", "办公用品"],
+             [{"api": "superstore_by_category", "args": {}}]),
+            # 子类 — 单独触发
+            (["子类", "子类别", "subcategory", "细分"],
+             [{"api": "superstore_by_subcategory", "args": {}}]),
+            # 区域 — 加多字关键词避免单字误触
+            (["region", "区域", "地区", "东部", "西部", "南部", "中部",
+              "east", "west", "south", "central", "哪个区", "各区"],
              [{"api": "superstore_by_region", "args": {}}]),
-            (["segment", "客户", "consumer", "corporate", "home office", "消费群", "企业"],
+            # 客户群
+            (["segment", "客户群", "consumer", "corporate", "home office", "消费群", "企业"],
              [{"api": "superstore_by_segment", "args": {}}]),
-            (["趋势", "trend", "月度", "monthly", "每月", "年度", "月份", "增长"],
+            # 月度趋势
+            (["趋势", "trend", "月度", "monthly", "每月", "月份", "哪个月",
+              "增长", "下降"],
              [{"api": "superstore_monthly_trend", "args": {}}]),
-            (["top", "最好", "畅销", "排名", "领先"],
+            # 畅销产品
+            (["top", "最好", "畅销", "排名", "领先", "前10", "前 10", "产品"],
              [{"api": "superstore_top_products", "args": {"n": 10}}]),
+            # 亏损
             (["亏损", "loss", "赔钱", "负利润", "不赚钱"],
              [{"api": "superstore_loss_products", "args": {"n": 10}}]),
-            (["州", "state", "省份", "地图", "分布"],
+            # 州
+            (["州", "state", "省份", "地图"],
              [{"api": "superstore_by_state", "args": {}}]),
-            (["运输", "ship", "配送", "物流", "快递"],
+            # 配送方式
+            (["运输", "ship", "配送", "物流", "快递", "配送方式"],
              [{"api": "superstore_by_ship_mode", "args": {}}]),
-            (["年度", "year", "每年", "年份", "年"],
+            # 年度 — 去掉单字 "年"，防止误触
+            (["每年", "年份", "年度", "by year"],
              [{"api": "superstore_by_year", "args": {}}]),
+            # 利润 — 仅 overview，不再触发 loss_products
             (["利润", "profit", "margin", "盈利", "毛利率", "盈利能力", "赚"],
-             [{"api": "superstore_overview", "args": {}},
-              {"api": "superstore_by_category", "args": {}},
-              {"api": "superstore_loss_products", "args": {"n": 5}}]),
+             [{"api": "superstore_overview", "args": {}}]),
+            # 销售概况 — 宽泛查询保持附带品类+区域
             (["销售额", "销售", "sales", "营收", "overview", "概况", "整体", "总览"],
              [{"api": "superstore_overview", "args": {}},
               {"api": "superstore_by_category", "args": {}},
@@ -1440,8 +1537,12 @@ API 查询结果：
                         matched.add(api_name)
                         tasks.append(api_task)
 
-        # 没有任何匹配 → 同时调用核心 API
+        # 没有任何匹配 → LLM 泛化分类或默认
         if not tasks:
+            if use_llm_fallback:
+                llm_tasks = self._llm_classify_intent(text)
+                if llm_tasks:
+                    return llm_tasks
             tasks = [
                 {"api": "superstore_overview", "args": {}},
                 {"api": "superstore_by_category", "args": {}},
