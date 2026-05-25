@@ -539,6 +539,97 @@
   @keyframes glow-pulse { 0%,100% { opacity: .4; } 50% { opacity: .8; } }
   @keyframes msgSlideIn { from { opacity: 0; transform: translateY(16px) scale(.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
   @keyframes gradient-shift { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
+
+  /* ===== Eval Floating Window ===== */
+  .eval-float-btn {
+    position: fixed; bottom: 80px; right: 24px; z-index: 999;
+    width: 48px; height: 48px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--blue), var(--blue-light));
+    color: #fff; border: none; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; font-weight: 700;
+    box-shadow: 0 4px 16px rgba(0,82,255,.35);
+    transition: var(--transition);
+  }
+  .eval-float-btn:hover { transform: scale(1.08); box-shadow: 0 6px 24px rgba(0,82,255,.45); }
+  .eval-float-btn:active { transform: scale(.95); }
+
+  .eval-window {
+    position: fixed; right: 24px; bottom: 140px; z-index: 1000;
+    width: 520px; max-height: 60vh;
+    background: #fff; border-radius: var(--radius);
+    border: 1px solid var(--gray-200);
+    box-shadow: var(--shadow-xl);
+    display: none; flex-direction: column;
+    overflow: hidden; resize: both;
+    min-width: 380px; min-height: 300px;
+  }
+  .eval-window.visible { display: flex; }
+
+  .eval-window-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px; border-bottom: 1px solid var(--gray-200);
+    cursor: move; user-select: none;
+    background: var(--gray-50); flex-shrink: 0;
+  }
+  .eval-window-header .title { font-size: 14px; font-weight: 600; color: var(--gray-700); display: flex; align-items: center; gap: 6px; }
+  .eval-window-header .close-btn {
+    width: 24px; height: 24px; border-radius: 6px; border: none;
+    background: transparent; cursor: pointer; font-size: 16px; color: var(--gray-400);
+    display: flex; align-items: center; justify-content: center; transition: var(--transition);
+  }
+  .eval-window-header .close-btn:hover { background: var(--gray-200); color: var(--gray-600); }
+
+  .eval-window-body {
+    flex: 1; overflow-y: auto; padding: 16px;
+  }
+  .eval-window-body .section { margin-bottom: 16px; }
+  .eval-window-body .section:last-child { margin-bottom: 0; }
+  .eval-window-body .section-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .6px; color: var(--gray-500); margin-bottom: 8px; }
+
+  .eval-window .stats-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+  .eval-window .stat-mini {
+    background: var(--gray-50); border-radius: var(--radius-sm); padding: 10px 12px;
+    border: 1px solid var(--gray-200);
+  }
+  .eval-window .stat-mini .lbl { font-size: 10px; color: var(--gray-500); font-weight: 600; text-transform: uppercase; letter-spacing: .4px; }
+  .eval-window .stat-mini .val { font-size: 18px; font-weight: 700; margin-top: 2px; font-family: var(--font-mono); }
+  .eval-window .stat-mini .val.good { color: var(--green); }
+  .eval-window .stat-mini .val.warn { color: var(--gold); }
+  .eval-window .stat-mini .val.bad { color: var(--red); }
+  .eval-window .stat-mini .val.normal { color: var(--blue); }
+
+  .eval-window .mini-bar-container { display: flex; align-items: flex-end; gap: 2px; height: 60px; }
+  .eval-window .mini-bar { flex: 1; border-radius: 2px 2px 0 0; min-height: 2px; transition: height .5s ease; }
+  .eval-window .mini-bar-label { font-size: 7px; color: var(--gray-400); text-align: center; margin-top: 2px; }
+
+  .eval-window .log-list { max-height: 160px; overflow-y: auto; }
+  .eval-window .log-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 8px; border-radius: 4px; font-size: 12px;
+    border-bottom: 1px solid var(--gray-100);
+  }
+  .eval-window .log-item:hover { background: var(--gray-50); }
+  .eval-window .log-item .li-time { color: var(--gray-400); font-size: 11px; white-space: nowrap; min-width: 32px; }
+  .eval-window .log-item .li-intent { flex: 1; color: var(--gray-600); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .eval-window .log-item .li-latency { color: var(--gray-500); font-family: var(--font-mono); font-size: 11px; min-width: 40px; text-align: right; }
+
+  .eval-window .refresh-line {
+    display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 4px 0;
+  }
+  .eval-window .refresh-line button {
+    padding: 3px 10px; border-radius: 6px; border: 1px solid var(--gray-200);
+    background: #fff; cursor: pointer; font-size: 11px; color: var(--gray-500); transition: var(--transition); font-family: var(--font);
+  }
+  .eval-window .refresh-line button:hover { border-color: var(--blue); color: var(--blue); }
+
+  .eval-window .eval-empty { padding: 20px; text-align: center; color: var(--gray-400); font-size: 12px; }
+
+  .eval-window .detail-toggle {
+    font-size: 11px; color: var(--blue); cursor: pointer; user-select: none;
+    text-align: center; padding: 4px;
+  }
+  .eval-window .detail-toggle:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -617,6 +708,41 @@
 
     <div class="chat-area" id="chatArea">
       <!-- Welcome screen shown by JS -->
+    </div>
+
+    <!-- Eval Floating Window -->
+    <button class="eval-float-btn" id="evalFloatBtn" title="评估监控">&#9673;</button>
+    <div class="eval-window" id="evalWindow">
+      <div class="eval-window-header" id="evalWindowHeader">
+        <span class="title">&#9673; 评估监控</span>
+        <button class="close-btn" id="evalCloseBtn">&times;</button>
+      </div>
+      <div class="eval-window-body" id="evalWindowBody">
+        <div class="section">
+          <div class="stats-row">
+            <div class="stat-mini"><div class="lbl">请求数</div><div class="val normal" id="ewTotal">-</div></div>
+            <div class="stat-mini"><div class="lbl">平均延迟</div><div class="val normal" id="ewLatency">- ms</div></div>
+            <div class="stat-mini"><div class="lbl">成功率</div><div class="val good" id="ewSuccess">-</div></div>
+            <div class="stat-mini"><div class="lbl">幻觉率</div><div class="val good" id="ewHallucination">-</div></div>
+          </div>
+        </div>
+        <div class="section">
+          <div class="section-title">延迟趋势</div>
+          <div class="mini-bar-container" id="ewTrendChart"></div>
+        </div>
+        <div class="section">
+          <div class="section-title" style="display:flex;justify-content:space-between;align-items:center;">
+            <span>最近日志</span>
+            <span class="refresh-line">
+              <span id="ewLogCount" style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--gray-400);font-size:11px;"></span>
+              <button id="ewRefreshBtn">刷新</button>
+            </span>
+          </div>
+          <div class="log-list" id="ewLogList">
+            <div class="eval-empty">暂无数据</div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="quick-bar" id="quickBar">
@@ -1411,6 +1537,151 @@
   refreshBtn.addEventListener('click', loadHistory);
 
   loadHistory();
+
+  // ===== Eval Floating Window =====
+  var evalBtn = document.getElementById('evalFloatBtn');
+  var evalWin = document.getElementById('evalWindow');
+  var evalHeader = document.getElementById('evalWindowHeader');
+  var evalCloseBtn = document.getElementById('evalCloseBtn');
+
+  // Drag
+  var dragState = null;
+  evalHeader.addEventListener('mousedown', function(e) {
+    if (e.target.closest('.close-btn')) return;
+    dragState = {
+      offsetX: e.clientX - evalWin.getBoundingClientRect().left,
+      offsetY: e.clientY - evalWin.getBoundingClientRect().top,
+    };
+    evalWin.style.transition = 'none';
+  });
+  document.addEventListener('mousemove', function(e) {
+    if (!dragState) return;
+    var newLeft = e.clientX - dragState.offsetX;
+    var newTop = e.clientY - dragState.offsetY;
+    newLeft = Math.max(0, Math.min(window.innerWidth - evalWin.offsetWidth, newLeft));
+    newTop = Math.max(0, Math.min(window.innerHeight - evalWin.offsetHeight, newTop));
+    evalWin.style.left = newLeft + 'px';
+    evalWin.style.right = 'auto';
+    evalWin.style.top = newTop + 'px';
+    evalWin.style.bottom = 'auto';
+  });
+  document.addEventListener('mouseup', function() {
+    if (dragState) { dragState = null; evalWin.style.transition = ''; }
+  });
+
+  // Toggle
+  evalBtn.addEventListener('click', function() {
+    var isVisible = evalWin.classList.contains('visible');
+    evalWin.classList.toggle('visible');
+    if (!isVisible) loadEvalData();
+  });
+  evalCloseBtn.addEventListener('click', function() { evalWin.classList.remove('visible'); });
+
+  // Refresh
+  document.getElementById('ewRefreshBtn').addEventListener('click', loadEvalData);
+
+  async function loadEvalData() {
+    try {
+      var [statsRes, logsRes] = await Promise.all([
+        fetch('/api/eval/stats?days=7'),
+        fetch('/api/eval/logs?limit=20'),
+      ]);
+      var stats = await statsRes.json();
+      var logs = await logsRes.json();
+
+      if (stats.success && stats.data) renderEvalStats(stats.data);
+      if (logs.success && logs.data) renderEvalLogs(logs.data);
+    } catch(e) { console.warn('评估数据加载失败:', e); }
+  }
+
+  function renderEvalStats(data) {
+    var total = data.total || 0;
+    var avgLat = data.avg_latency_ms || 0;
+    var sr = data.success_rate || 0;
+    var hr = data.hallucination_rate || 0;
+
+    setEwStat('ewTotal', total, 'normal');
+    setEwStat('ewLatency', avgLat + ' ms', avgLat > 5000 ? 'bad' : avgLat > 2000 ? 'warn' : 'normal');
+    setEwStat('ewSuccess', sr + '%', sr >= 95 ? 'good' : sr >= 80 ? 'warn' : 'bad');
+    setEwStat('ewHallucination', hr + '%', hr <= 5 ? 'good' : hr <= 15 ? 'warn' : 'bad');
+
+    // Trend chart
+    var trend = data.daily_trend || [];
+    var tc = document.getElementById('ewTrendChart');
+    tc.innerHTML = '';
+    if (trend.length === 0) { tc.innerHTML = '<div class="eval-empty">暂无趋势数据</div>'; }
+    else {
+      var maxLat = Math.max.apply(null, trend.map(function(t) { return t.avg_latency_ms || 0; })) || 1;
+      trend.forEach(function(t) {
+        var wrap = document.createElement('div');
+        wrap.className = 'mini-bar-wrap';
+        wrap.style.cssText = 'flex:1;display:flex;flex-direction:column;align-items:center;height:100%;justify-content:flex-end;';
+        var bar = document.createElement('div');
+        bar.className = 'mini-bar';
+        var pct = Math.max(2, ((t.avg_latency_ms || 0) / maxLat) * 55);
+        bar.style.height = pct + 'px';
+        bar.style.background = t.avg_latency_ms > 3000 ? 'var(--red)' : 'var(--blue)';
+        var label = document.createElement('div');
+        label.className = 'mini-bar-label';
+        label.textContent = (t.date || '').slice(5);
+        wrap.appendChild(bar);
+        wrap.appendChild(label);
+        tc.appendChild(wrap);
+      });
+    }
+  }
+
+  function setEwStat(id, val, cls) {
+    var el = document.getElementById(id);
+    if (el) { el.textContent = val; el.className = 'val ' + cls; }
+  }
+
+  function renderEvalLogs(logs) {
+    var list = document.getElementById('ewLogList');
+    var countEl = document.getElementById('ewLogCount');
+    list.innerHTML = '';
+    if (!logs || logs.length === 0) {
+      list.innerHTML = '<div class="eval-empty">暂无评估日志</div>';
+      if (countEl) countEl.textContent = '';
+      return;
+    }
+    if (countEl) countEl.textContent = logs.length + ' 条';
+    logs.forEach(function(log) {
+      var item = document.createElement('div');
+      item.className = 'log-item';
+
+      var time = document.createElement('span');
+      time.className = 'li-time';
+      var t = log.created_at || '';
+      time.textContent = t.length > 10 ? t.slice(5, 10) : t;
+
+      var intent = document.createElement('span');
+      intent.className = 'li-intent';
+      intent.textContent = (log.intent || 'N/A').slice(0, 20);
+
+      var lat = document.createElement('span');
+      lat.className = 'li-latency';
+      lat.textContent = log.latency_ms ? (log.latency_ms < 1000 ? log.latency_ms + 'ms' : (log.latency_ms / 1000).toFixed(1) + 's') : '-';
+
+      var dot = document.createElement('span');
+      dot.style.cssText = 'width:6px;height:6px;border-radius:50%;flex-shrink:0;';
+      if (log.hallucination) dot.style.background = 'var(--gold)';
+      else if (log.status === 'failed') dot.style.background = 'var(--red)';
+      else dot.style.background = 'var(--green)';
+
+      item.appendChild(dot);
+      item.appendChild(time);
+      item.appendChild(intent);
+      item.appendChild(lat);
+      list.appendChild(item);
+    });
+  }
+
+  // Auto-load on open
+  // Auto-refresh every 30s while visible
+  setInterval(function() {
+    if (evalWin.classList.contains('visible')) loadEvalData();
+  }, 30000);
 })();
 </script>
 </body>

@@ -15,6 +15,7 @@ import json
 import re
 import inspect
 import logging
+import time
 from typing import Optional
 
 import requests
@@ -699,12 +700,28 @@ class BizAgent:
         self._quick_ctx.add_user(user_input)
         context_msgs = self._quick_ctx.get_context()
 
-        logger.info("[Quick] context_msgs=%d, history=%d",
-            len(context_msgs), len(self._quick_ctx.get_full_history()))
+        _start_time = time.perf_counter()
+        _retry_count = 0
+        if self.data_source == "superstore":
+            _intent_tasks = self._match_superstore_intent(user_input.lower())
+            _intent_apis = [t["api"] for t in _intent_tasks] if _intent_tasks else ["superstore_overview"]
+        else:
+            _intent_apis = []
+        _intent_label = ",".join(_intent_apis) if _intent_apis else ""
 
         try:
             # 第一次调用，带工具定义（只需识别意图，用小限制加速）
-            resp = self._call_api(context_msgs, use_json_mode=False, tools=self.tools, max_tokens=256)
+            _retry_count = 0
+            while _retry_count < 3:
+                try:
+                    resp = self._call_api(context_msgs, use_json_mode=False, tools=self.tools, max_tokens=256)
+                    break
+                except (requests.RequestException, ModelCallError) as e:
+                    _retry_count += 1
+                    if _retry_count >= 3:
+                        raise
+                    logger.warning("[Quick] 重试 #%d: %s", _retry_count, e)
+                    time.sleep(0.5 * _retry_count)
             msg = resp["choices"][0]["message"]
             content = msg.get("content", "")
             tool_calls = msg.get("tool_calls")
@@ -754,6 +771,19 @@ class BizAgent:
                 {"role": "assistant", "content": content},
             ])
 
+            # 评估日志
+            _latency = int((time.perf_counter() - _start_time) * 1000)
+            if self._enable_persistence:
+                try:
+                    session_store.save_eval_log(
+                        session_id=self.session_id, mode="quick",
+                        user_input=user_input[:200], intent=_intent_label,
+                        latency_ms=_latency, retry_count=_retry_count,
+                        status="success", model_response=content[:500],
+                    )
+                except Exception as e:
+                    logger.warning("[Eval] 保存评估日志失败: %s", e)
+
             return {
                 "status": "success",
                 "data": {"answer": content},
@@ -764,6 +794,18 @@ class BizAgent:
             logger.error("[Quick] 请求失败: %s", err_msg)
             if not isinstance(e, AgentError):
                 err_msg = "系统处理异常，请稍后重试。"
+            # 失败时的评估日志
+            _latency = int((time.perf_counter() - _start_time) * 1000)
+            if self._enable_persistence:
+                try:
+                    session_store.save_eval_log(
+                        session_id=self.session_id, mode="quick",
+                        user_input=user_input[:200], intent=_intent_label,
+                        latency_ms=_latency, retry_count=_retry_count,
+                        status="failed", error=err_msg[:200],
+                    )
+                except Exception as e:
+                    logger.warning("[Eval] 保存评估日志失败: %s", e)
             return {"status": "error", "error": err_msg, "data": None}
 
     def chat_smart(self, user_input: str) -> dict:
@@ -1144,6 +1186,7 @@ class BizAgent:
           - API 调用走 SUPERSTORE_FUNCTION_MAP
           - 分析算子走 superstore_analysis.auto_analyze_superstore
         """
+        _start_time = time.perf_counter()
         tracker = self._get_tracker() if self._enable_tracking else None
         task_id = None
         if tracker:
@@ -1303,6 +1346,50 @@ API 查询结果：
             {"role": "user", "content": user_input},
             {"role": "assistant", "content": json.dumps(final, ensure_ascii=False)},
         ], task_id)
+
+        # ---- Reflection 幻觉检测 ----
+        _reflection = None
+        _has_hallucination = False
+        _hallucination_detail = None
+        _reflection_score = None
+        try:
+            from .reflection import ReflectionPipeline
+            _reflection = ReflectionPipeline.run(
+                intent="superstore_analysis", confidence=1.0,
+                params={}, template=None,
+                api_results=api_results, llm_output=output, skip_l3=False,
+            )
+            if _reflection.l3 and _reflection.l3.issues:
+                _has_hallucination = True
+                _hallucination_detail = json.dumps(_reflection.l3.issues, ensure_ascii=False)[:500]
+            _reflection_score = _reflection.overall_confidence
+        except Exception as e:
+            logger.warning("[Reflection] 幻觉检测失败: %s", e)
+
+        # ---- 评估日志 ----
+        if self._enable_persistence:
+            try:
+                _token_usage = {}
+                try:
+                    _token_usage = resp.get("usage", {})
+                except Exception:
+                    pass
+                session_store.save_eval_log(
+                    session_id=self.session_id, task_id=task_id, mode="analysis",
+                    user_input=user_input[:200],
+                    intent=",".join(list(api_results.keys())),
+                    intent_confidence=_reflection_score,
+                    latency_ms=int((time.perf_counter() - _start_time) * 1000),
+                    retry_count=0,
+                    hallucination=_has_hallucination,
+                    hallucination_detail=_hallucination_detail,
+                    reflection_score=_reflection_score,
+                    token_usage=json.dumps(_token_usage) if _token_usage else None,
+                    status=output.get("status", "success"),
+                    model_response=json.dumps(output, ensure_ascii=False)[:500],
+                )
+            except Exception as e:
+                logger.warning("[Eval] 保存评估日志失败: %s", e)
 
         return final
 

@@ -91,9 +91,32 @@ class SessionStore:
                     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS eval_logs (
+                    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id        TEXT NOT NULL,
+                    task_id           TEXT,
+                    mode              TEXT NOT NULL,
+                    user_input        TEXT NOT NULL,
+                    intent            TEXT,
+                    intent_confidence REAL,
+                    latency_ms        INTEGER,
+                    retry_count       INTEGER DEFAULT 0,
+                    hallucination     INTEGER DEFAULT 0,
+                    hallucination_detail TEXT,
+                    reflection_score  REAL,
+                    token_usage       TEXT,
+                    status            TEXT NOT NULL DEFAULT 'success',
+                    error             TEXT,
+                    model_response    TEXT,
+                    created_at        TEXT NOT NULL
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
                 CREATE INDEX IF NOT EXISTS idx_task_logs_session ON task_logs(session_id);
                 CREATE INDEX IF NOT EXISTS idx_task_logs_task  ON task_logs(task_id);
+                CREATE INDEX IF NOT EXISTS idx_eval_logs_created ON eval_logs(created_at);
+                CREATE INDEX IF NOT EXISTS idx_eval_logs_session ON eval_logs(session_id);
+                CREATE INDEX IF NOT EXISTS idx_eval_logs_intent  ON eval_logs(intent);
             """)
             conn.commit()
         finally:
@@ -249,7 +272,165 @@ class SessionStore:
         finally:
             conn.close()
 
-    # ==================== 消息 ====================
+    # ==================== 评估日志 ====================
+
+    def save_eval_log(
+        self,
+        session_id: str,
+        mode: str,
+        user_input: str,
+        task_id: Optional[str] = None,
+        intent: Optional[str] = None,
+        intent_confidence: Optional[float] = None,
+        latency_ms: Optional[int] = None,
+        retry_count: int = 0,
+        hallucination: bool = False,
+        hallucination_detail: Optional[str] = None,
+        reflection_score: Optional[float] = None,
+        token_usage: Optional[str] = None,
+        status: str = "success",
+        error: Optional[str] = None,
+        model_response: Optional[str] = None,
+    ) -> int:
+        """保存一条评估日志"""
+        conn = self._get_conn()
+        try:
+            cur = conn.execute(
+                """INSERT INTO eval_logs
+                   (session_id, task_id, mode, user_input, intent, intent_confidence,
+                    latency_ms, retry_count, hallucination, hallucination_detail,
+                    reflection_score, token_usage, status, error, model_response, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                [
+                    session_id, task_id, mode, user_input, intent, intent_confidence,
+                    latency_ms, retry_count, 1 if hallucination else 0, hallucination_detail,
+                    reflection_score, token_usage, status, error, model_response, _now(),
+                ],
+            )
+            conn.commit()
+            return cur.lastrowid or -1
+        except sqlite3.Error as e:
+            logger.error("[SessionStore] 保存评估日志失败: %s", e)
+            return -1
+        finally:
+            conn.close()
+
+    def query_eval_logs(
+        self,
+        limit: int = 50,
+        session_id: Optional[str] = None,
+        intent: Optional[str] = None,
+        status: Optional[str] = None,
+        offset: int = 0,
+    ) -> list[dict]:
+        """查询评估日志，支持按 session / intent / status 筛选"""
+        conn = self._get_conn()
+        try:
+            where = []
+            params = []
+            if session_id:
+                where.append("session_id = ?")
+                params.append(session_id)
+            if intent:
+                where.append("intent LIKE ?")
+                params.append(f"%{intent}%")
+            if status:
+                where.append("status = ?")
+                params.append(status)
+            sql = "SELECT * FROM eval_logs"
+            if where:
+                sql += " WHERE " + " AND ".join(where)
+            sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+            rows = conn.execute(sql, params).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def get_eval_stats(self, days: int = 7) -> dict:
+        """获取评估统计：平均延迟、成功率、意图分布、幻觉率"""
+        conn = self._get_conn()
+        try:
+            total = conn.execute(
+                "SELECT COUNT(*) FROM eval_logs WHERE created_at >= datetime('now', ? || ' days', 'localtime')",
+                [f"-{days}"],
+            ).fetchone()[0]
+
+            if total == 0:
+                return {
+                    "total": 0, "avg_latency_ms": 0, "success_rate": 0,
+                    "hallucination_rate": 0, "intent_distribution": [],
+                    "daily_trend": [],
+                }
+
+            # 成功率
+            success = conn.execute(
+                "SELECT COUNT(*) FROM eval_logs WHERE status='success' AND created_at >= datetime('now', ? || ' days', 'localtime')",
+                [f"-{days}"],
+            ).fetchone()[0]
+
+            # 平均延迟
+            avg_lat = conn.execute(
+                "SELECT COALESCE(AVG(latency_ms), 0) FROM eval_logs WHERE latency_ms IS NOT NULL AND created_at >= datetime('now', ? || ' days', 'localtime')",
+                [f"-{days}"],
+            ).fetchone()[0]
+
+            # 幻觉率
+            h_count = conn.execute(
+                "SELECT COUNT(*) FROM eval_logs WHERE hallucination=1 AND created_at >= datetime('now', ? || ' days', 'localtime')",
+                [f"-{days}"],
+            ).fetchone()[0]
+
+            # 意图分布
+            intent_rows = conn.execute(
+                "SELECT intent, COUNT(*) as cnt FROM eval_logs WHERE created_at >= datetime('now', ? || ' days', 'localtime') AND intent IS NOT NULL AND intent != '' GROUP BY intent ORDER BY cnt DESC LIMIT 10",
+                [f"-{days}"],
+            ).fetchall()
+
+            # 每日趋势
+            trend_rows = conn.execute(
+                "SELECT DATE(created_at) as day, AVG(latency_ms) as avg_lat, COUNT(*) as cnt, SUM(hallucination) as h_cnt FROM eval_logs WHERE created_at >= datetime('now', ? || ' days', 'localtime') GROUP BY DATE(created_at) ORDER BY day",
+                [f"-{days}"],
+            ).fetchall()
+
+            return {
+                "total": total,
+                "successful": success,
+                "success_rate": round(success / total * 100, 1) if total else 0,
+                "avg_latency_ms": round(avg_lat, 1) if avg_lat else 0,
+                "hallucination_rate": round(h_count / total * 100, 1) if total else 0,
+                "hallucination_count": h_count,
+                "intent_distribution": [{"intent": r["intent"], "count": r["cnt"]} for r in intent_rows],
+                "daily_trend": [{
+                    "date": r["day"],
+                    "avg_latency_ms": round(r["avg_lat"], 1) if r["avg_lat"] else 0,
+                    "count": r["cnt"],
+                    "hallucinations": r["h_cnt"] or 0,
+                } for r in trend_rows],
+            }
+        finally:
+            conn.close()
+
+    def delete_eval_logs(self, session_id: Optional[str] = None) -> int:
+        """删除评估日志，可选按 session 筛选。返回删除条数。"""
+        conn = self._get_conn()
+        try:
+            if session_id:
+                count = conn.execute(
+                    "DELETE FROM eval_logs WHERE session_id = ?", [session_id]
+                ).rowcount
+            else:
+                count = conn.execute("DELETE FROM eval_logs").rowcount
+            conn.commit()
+            return count
+        except sqlite3.Error as e:
+            logger.error("[SessionStore] 删除评估日志失败: %s", e)
+            return 0
+        finally:
+            conn.close()
+
+
+# 全局单例
 
     def save_message(
         self, session_id: str, role: str, content: str, task_id: Optional[str] = None

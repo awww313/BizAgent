@@ -226,7 +226,7 @@ class ChatRequest(BaseModel):
     message: str = Field(..., description="用户输入", min_length=0, max_length=2000)
     mode: Literal["quick", "smart", "analysis"] = Field("quick", description="对话模式: quick=快速问答 / smart=旧版智能对话（同 quick）/ analysis=深度分析+图表")
     session_id: str = Field("", description="会话 ID（留空自动生成）")
-    enable_persistence: bool = Field(False, description="是否启用 SQLite 持久化存储")
+    enable_persistence: bool = Field(True, description="是否启用 SQLite 持久化存储")
     role: Literal["admin", "employee"] = Field("admin", description="角色: admin=管理端（可增删改）, employee=员工端（仅查询）")
     # 文件参数
     file_content: str = Field("", description="文件内容（Base64 编码）")
@@ -472,6 +472,53 @@ def get_system_stats():
             "failed_tasks": total_tasks - success_tasks,
         },
     }
+
+
+# ============================================================
+# 评估监控端点
+# ============================================================
+
+@app.get("/api/eval/logs")
+def get_eval_logs(
+    session_id: str = "",
+    intent: str = "",
+    status: str = "",
+    limit: int = 50,
+):
+    """查询评估日志，支持按 session/intent/status 筛选"""
+    try:
+        logs = session_store.query_eval_logs(
+            limit=limit,
+            session_id=session_id or None,
+            intent=intent or None,
+            status=status or None,
+        )
+        return {"success": True, "data": logs}
+    except Exception as e:
+        logger.error("[API] 查询评估日志失败: %s", e)
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/eval/stats")
+def get_eval_stats(days: int = 7):
+    """获取评估统计：平均延迟、成功率、意图分布、幻觉率"""
+    try:
+        stats = session_store.get_eval_stats(days=days)
+        return {"success": True, "data": stats}
+    except Exception as e:
+        logger.error("[API] 获取评估统计失败: %s", e)
+        return {"success": False, "error": str(e)}
+
+
+@app.delete("/api/eval/logs")
+def delete_eval_logs(session_id: str = ""):
+    """清空评估日志，可选按 session 筛选"""
+    try:
+        count = session_store.delete_eval_logs(session_id=session_id or None)
+        return {"success": True, "data": {"deleted": count}}
+    except Exception as e:
+        logger.error("[API] 清空评估日志失败: %s", e)
+        return {"success": False, "error": str(e)}
 
 
 @app.get("/api/history")
