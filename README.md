@@ -1,41 +1,71 @@
 # BizAgent — 商务智能助手
 
-基于 LLM（DeepSeek）的商务智能 Agent 服务，支持自然语言查询企业数据、自动分析生成报告与可视化图表。
+基于 LLM（DeepSeek）的对话式商务智能 Agent，用自然语言查询和分析数据，自动生成报告与可视化图表。
 
-## 功能特性
+## 产品定位
 
-- **多模式对话** — `quick` 快速问答 / `analysis` 深度分析+图表，按需切换
-- **意图驱动引擎** — 自动识别用户意图（财务/销售/库存/员工/客户），提取参数、绑定 API、模板化输出
-- **10+ 分析算子** — 增长率、占比、财务环比、销售对比、月度趋势、库存状态、员工统计、客户分层等
-- **自动可视化** — 根据数据特征自动选择折线图、柱状图、饼图，一键生成 PNG
-- **Reflection 质量评估** — 每次回答自动做置信度打分和幻觉检测，不确定时主动提示用户确认
-- **角色权限控制** — `admin`（管理端，增删改查）/ `employee`（员工端，仅查询）
-- **文件解析** — 支持 PDF、Word、Excel、CSV、JSON、Markdown 等格式上传解析
-- **任务追踪与会话持久化** — SQLite 存储历史会话和消息，支持回溯
-- **完整 Web 界面** — 单页应用，可拖拽侧边栏、图表面板、模式切换
-- **Mock 企业数据** — 内置模拟库存/财务/销售/员工/客户数据，开箱即用
+BizAgent 将自然语言交互引入数据分析场景，让非技术用户也能像和数据专家对话一样，直接提问获取洞察。
 
-## 架构概览
+**目标用户**：业务负责人、运营分析、销售管理、财务人员 — 任何需要快速从数据中获得答案但不想写 SQL 或拖拽报表的人。
 
-BizAgent 遵循 **三层 Prompt + Function Calling + 意图引擎** 的设计：
+**解决的问题**：传统 BI 工具有使用门槛（需拖拽维度指标、配置仪表盘），而 BizAgent 只需打字提问。
 
-1. 用户输入 → **意图引擎** 分类（财务/销售/库存等）并提取参数
-2. 意图匹配 → 调用 **Mock 企业 API** 获取真实业务数据
-3. 数据 → **分析算子** 自动计算统计指标
-4. 结果 → **可视化器** 生成图表 + **Reflection** 管线做质量评估
-5. 最终输出结构化响应（文字报告 + 图表）
+## 核心能力
+
+- **快速问答** — 查数据、比指标，一问一答，秒级响应
+- **深度分析** — 自动完成意图识别→数据查询→统计分析→图表生成→结论输出全流程
+- **数据源** — 内置 Kaggle Superstore Sales 数据集（美国零售超市 2014-2017 年，9994 条交易记录）
+- **分析维度** — 产品品类（Furniture / Office Supplies / Technology）、区域（East / West / Central / South）、客户群（Consumer / Corporate / Home Office）、时间趋势、地理分布等
+- **权限控制** — 管理端（可读写）/ 员工端（仅查询）
+- **文件解析** — 上传 PDF / Word / Excel / CSV 等格式，自动提取内容进行分析
+
+## 典型使用场景
+
+| 场景 | 示例提问 | 推荐模式 |
+|------|---------|---------|
+| 快速查数 | "Technology 品类卖了多少" | 快速对话 |
+| 对比分析 | "各区域的销售额和利润对比" | 深度分析 |
+| 趋势洞察 | "月度销售趋势如何" | 快速对话 |
+| 定位问题 | "哪些产品亏损最严重？根因是什么" | 深度分析 |
+| 客户洞察 | "不同客户群的消费行为差异" | 深度分析 |
+| 综合报告 | "全维度经营状况分析" | 深度分析 |
+
+## 工作流程
+
+```
+用户提问 → 意图匹配 / 关键词识别 → 调用 Superstore 数据 API
+  → 统计分析与指标计算 → 图表生成（折线图/柱状图/饼图）
+  → LLM 组织自然语言报告 → 输出结果
+```
+
+两种模式的区别：
+- **快速对话**：识别关键词后调用对应 API 获取数据，直接格式化返回，轻量快速
+- **深度分析**：多维度调取数据 + 统计分析算子 + 图表可视化 + LLM 深度报告
+
+## 效果示例
+
+**问**："Technology 品类销售情况"
+
+**答**：
+> Technology 品类总销售额约 83.6 万美元，利润约 14.5 万美元，平均利润率 15.61%，在三大品类中销售额最高、利润也最高。
+>
+> 各子类表现如下：
+> - Phones（手机）：销售额最高，约 33 万美元
+> - Accessories（配件）：销售额 16.7 万，利润率 21.82%，盈利能力较强
+> - Copiers（复印机）：利润率 31.72%，利润率最高
+> - Machines（机器）：利润率为 -7.2%，处于亏损状态
 
 ## 快速开始
 
 ### 环境要求
 
 - Python >= 3.12
-- [uv](https://docs.astral.sh/uv/getting-started/installation/)（推荐）或 pip
+- uv（推荐）或 pip
 
 ### 安装
 
 ```bash
-git clone https://github.com/<your-org>/BizAgent.git
+git clone https://github.com/awww313/BizAgent.git
 cd BizAgent
 uv sync
 ```
@@ -49,22 +79,41 @@ DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
 ```
 
-如果需要联网搜索能力，可选配置：
-
-```bash
-TAVILY_API_KEY=tvly-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-```
-
-### 启动服务
+### 启动
 
 ```bash
 python api_server.py
 ```
 
-服务启动后：
-- Web 界面：http://localhost:5001
-- API 文档（Swagger UI）：http://localhost:5001/docs
-- 健康检查：http://localhost:5001/api/health
+访问 http://localhost:5001 即可使用 Web 界面。
+
+## 架构
+
+```
+api_server.py          FastAPI 服务（对话/会话/任务/文件端点）
+  └── BizAgent         核心 Agent
+        ├── chat_quick()              快速问答（函数调用+工具执行）
+        ├── chat_with_analysis()      深度分析（意图→API→分析→图表→报告）
+        ├── superstore_api.py         11 个数据查询函数与工具定义
+        ├── superstore_analysis.py    统计分析算子
+        ├── visualizer.py             图表生成（折线图/柱状图/饼图）
+        ├── session_store.py          SQLite 会话持久化
+        └── task_tracker.py           任务执行追踪
+static/index.html      Web 前端界面
+```
+
+### 对话模式
+
+| 模式 | 端到端延迟 | 适用场景 |
+|------|-----------|---------|
+| 快速对话 | ~3-6s | 日常数据查询、指标确认 |
+| 深度分析 | ~5-12s | 复杂分析、报告生成、图表可视化 |
+
+### 数据层
+
+- **Superstore Sales**（Kaggle）：9,994 条交易记录，21 个字段
+- **数据表**：`superstore_orders`（SQLite，自动从 Kaggle 下载并导入）
+- 首次查询时自动完成数据加载，无需手动操作
 
 ## API 使用
 
@@ -74,73 +123,58 @@ python api_server.py
 curl -X POST http://localhost:5001/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "message": "上个月各产品线利润情况如何？",
-    "mode": "analysis",
-    "role": "admin",
-    "generate_chart": true
+    "message": "各区域的销售额和利润对比",
+    "mode": "analysis"
   }'
 ```
 
-### 模式说明
+### 模式参数
 
-| 模式 | 端点参数 | 说明 |
-|------|---------|------|
-| 快速问答 | `mode: "quick"` | 三层 Prompt 直接回答，不调用外部工具 |
-| 智能对话 | `mode: "smart"` | 同 quick，兼容旧版 |
-| 深度分析 | `mode: "analysis"` | 意图识别 → API 调用 → 统计分析 → 图表生成 |
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| `mode` | `"quick"` | 快速问答 |
+| `mode` | `"analysis"` | 深度分析+图表 |
+| `role` | `"admin"` / `"employee"` | 管理端/员工端权限 |
+| `generate_chart` | `true` / `false` | 是否生成图表（仅 analysis 模式） |
+| `file_content` | base64 | 上传文件内容 |
+| `file_name` | string | 上传文件名 |
 
 ### 文件上传
 
-```bash
-curl -X POST http://localhost:5001/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "message": "分析这份销售数据",
-    "mode": "analysis",
-    "file_content": "<base64编码的文件内容>",
-    "file_name": "sales_2025.xlsx"
-  }'
-```
-
-支持的文件类型：`.txt .csv .json .md .pdf .docx .xlsx .png .jpg .jpeg`
+支持 `.txt .csv .json .md .pdf .docx .xlsx .png .jpg .jpeg`
 
 ### 会话管理
 
 ```bash
-# 查看活跃会话
-GET /api/sessions
-
-# 获取会话消息历史
-GET /api/sessions/{session_id}/messages
-
-# 删除会话
-DELETE /api/sessions/{session_id}
+GET  /api/sessions                       # 活跃会话列表
+GET  /api/sessions/{session_id}/messages # 会话消息历史
+DELETE /api/sessions/{session_id}        # 删除会话
 ```
 
 ## 项目结构
 
 ```
 BizAgent/
-├── api_server.py                  # FastAPI 服务入口
+├── api_server.py                  FastAPI 服务（端点和路由）
 ├── src/minimal_agent/
-│   ├── biz_agent.py               # 核心 Agent（三层 Prompt + Function Calling）
-│   ├── intent_engine.py           # 意图识别引擎
-│   ├── analysis_ops.py            # 分析算子（增长率/占比/趋势等）
-│   ├── visualizer.py              # 图表生成（matplotlib）
-│   ├── reflection.py              # Reflection 质量评估管线
-│   ├── prompts.py                 # Prompt 模板
-│   ├── context_manager.py         # 上下文管理/裁剪
-│   ├── session_store.py           # SQLite 会话持久化
-│   ├── task_tracker.py            # 任务执行追踪
-│   ├── enterprise_db.py           # Mock 企业数据库
-│   ├── mock_enterprise_api.py     # Mock 业务 API
-│   ├── response_builder.py        # 响应格式化
-│   └── exceptions.py              # 分级异常定义
-├── static/index.html              # 前端 Web 界面
-├── charts/                        # 自动生成的图表（gitignore）
-├── data/                          # 持久化数据（gitignore）
-├── scripts/                       # 演进教程脚本
-└── benchmark/                     # 性能基准测试
+│   ├── biz_agent.py               核心 Agent（对话编排）
+│   ├── superstore_api.py          Superstore 数据 API（11 个查询函数）
+│   ├── superstore_analysis.py     分析算子
+│   ├── superstore_loader.py       数据集自动下载与导入
+│   ├── enterprise_db.py           SQLite 数据库层
+│   ├── visualizer.py              图表生成
+│   ├── intent_engine.py           意图识别引擎
+│   ├── analysis_ops.py            分析算子（旧版）
+│   ├── prompts.py                 Prompt 模板
+│   ├── context_manager.py         上下文管理
+│   ├── session_store.py           SQLite 会话持久化
+│   ├── task_tracker.py            任务执行追踪
+│   ├── mock_enterprise_api.py     企业 API 函数定义
+│   ├── response_builder.py        响应格式化
+│   └── exceptions.py              异常定义
+├── static/index.html              Web 前端
+├── charts/                        自动生成的图表
+└── data/                          持久化数据
 ```
 
 ## 技术栈
@@ -148,21 +182,12 @@ BizAgent/
 | 组件 | 技术 |
 |------|------|
 | Web 框架 | FastAPI + Uvicorn |
-| LLM | DeepSeek Chat（通过 LiteLLM 统一接口） |
-| 文件解析 | PyMuPDF（PDF）、python-docx（Word）、openpyxl（Excel） |
+| LLM | DeepSeek Chat (deepseek-chat) |
+| 数据库 | SQLite |
 | 可视化 | matplotlib |
-| Agent 引擎 | smolagents（Hugging Face） |
-| 搜索 | DuckDuckGo / Tavily（可选） |
-| 运行环境 | Python 3.12+，uv 包管理 |
-
-## 配置参考
-
-| 环境变量 | 说明 | 默认值 |
-|---------|------|--------|
-| `DEEPSEEK_API_KEY` | DeepSeek API 密钥 | 必填 |
-| `DEEPSEEK_BASE_URL` | API 地址 | `https://api.deepseek.com/v1` |
-| `BIZAGENT_PORT` | 服务端口 | `5001` |
-| `TAVILY_API_KEY` | Tavily 搜索 API 密钥（可选） | - |
+| 文件解析 | PyMuPDF (PDF), python-docx (Word), openpyxl (Excel) |
+| 数据源 | Kaggle Superstore Sales Dataset |
+| 运行环境 | Python 3.12+, uv 包管理 |
 
 ## License
 

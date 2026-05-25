@@ -239,7 +239,7 @@ class BizAgent:
             {"role": "user", "content": user_prompt},
         ]
 
-    def _call_api(self, messages: list, use_json_mode: bool = True, tools: list = None) -> dict:
+    def _call_api(self, messages: list, use_json_mode: bool = True, tools: list = None, max_tokens: int = 1024) -> dict:
         """调用大模型 API，含分级异常处理和追踪"""
         tracker = self._get_tracker() if self._enable_tracking else None
         step_id = None
@@ -256,6 +256,7 @@ class BizAgent:
             "model": self.model,
             "messages": messages,
             "temperature": 0.1,
+            "max_tokens": max_tokens,
         }
         if use_json_mode:
             payload["response_format"] = {"type": "json_object"}
@@ -473,6 +474,63 @@ class BizAgent:
         logger.info(f"[FunctionCall] <- {result_str[:200]}")
         return result_str
 
+    def _summarize_tool_results(self, tool_results: list[dict]) -> str:
+        """将工具调用结果快速格式化为简短的自然语言回复，避免第二次 API 调用。"""
+        parts = []
+        for tr in tool_results:
+            data = tr.get("data", {})
+            func_name = tr.get("_func_name", "")
+            # superstore_by_category
+            if "categories" in data:
+                cats = data["categories"]
+                rows = [f"{c['category']}: {c['total_sales']:.1f} 美元（利润 {c['total_profit']:.1f}）" for c in cats[:5]]
+                parts.append("各品类销售情况：\n" + "\n".join(rows))
+            # superstore_by_subcategory
+            if "subcategories" in data:
+                subs = data["subcategories"]
+                rows = [f"{s['sub_category']}: {s['total_sales']:.1f} 美元（利润率 {s.get('avg_margin_pct', 0):.1f}%）" for s in subs[:8]]
+                parts.append("子类别明细：\n" + "\n".join(rows))
+            # superstore_by_region
+            if "regions" in data:
+                regs = data["regions"]
+                rows = [f"{r['region']}: {r['total_sales']:.1f} 美元" for r in regs[:5]]
+                parts.append("各区域销售情况：\n" + "\n".join(rows))
+            # superstore_by_segment
+            if "segments" in data:
+                segs = data["segments"]
+                rows = [f"{s['segment']}: {s['total_sales']:.1f} 美元（利润 {s['total_profit']:.1f}）" for s in segs[:4]]
+                parts.append("客户群销售情况：\n" + "\n".join(rows))
+            # superstore_monthly_trend
+            if "trends" in data:
+                trends = data["trends"]
+                if trends:
+                    first, last = trends[0], trends[-1]
+                    parts.append(f"销售趋势：{first['month']} 至 {last['month']}，销售额 {last['total_sales']:.1f} 美元")
+            # superstore_top_products / loss_products
+            for key in ("top_products", "loss_products"):
+                if key in data:
+                    items = data[key]
+                    label = "畅销产品" if key == "top_products" else "亏损产品"
+                    rows = [f"{i.get('product_name','?')[:20]}: {i.get('total_sales',0):.1f} 美元（利润 {i.get('total_profit',0):.1f}）" for i in items[:5]]
+                    parts.append(f"{label}排名：\n" + "\n".join(rows))
+            # superstore_overview
+            for key in ("total_sales", "total_profit", "avg_margin", "total_orders", "total_customers"):
+                if key in data:
+                    v = data[key]
+                    label_map = {"total_sales": "总销售额", "total_profit": "总利润", "avg_margin": "平均利润率", "total_orders": "订单总数", "total_customers": "客户总数"}
+                    label = label_map.get(key, key)
+                    parts.append(f"{label}：{v}")
+            # superstore_by_state
+            if "states" in data:
+                states = data["states"]
+                rows = [f"{s['state']}: {s['total_sales']:.1f} 美元" for s in states[:5]]
+                parts.append("各州销售情况：\n" + "\n".join(rows))
+
+        if not parts:
+            return None  # 无法生成摘要，回退到模型调用
+
+        return "；".join(parts[:6])  # 限制信息量，保持简短
+
     def chat_with_tools(self, user_input: str) -> dict:
         """
         Function Calling 对话：模型自动判断需要调用的企业 API，
@@ -610,8 +668,9 @@ class BizAgent:
                     "1. 用纯中文自然语言回答，语言简洁清晰。\n"
                     "2. 你可以调用数据接口查询各类别、区域、客户群的销售额、利润、销量等数据。\n"
                     "3. 根据查询到的真实数据回答用户问题，数据如有不确定，明确说明。\n"
-                    "4. 不要使用表情符号。\n"
-                    "5. 回答应简短直接，适合快速阅读。"
+                    "4. 禁止使用 Markdown 标记（如 **、*、# 等），不要包含技术性描述。\n"
+                    "5. 不要使用表情符号。\n"
+                    "6. 回答应简短直接，适合快速阅读。"
                 )
             else:
                 quick_system = (
@@ -620,8 +679,9 @@ class BizAgent:
                     "1. 用纯中文自然语言回答，语言简洁清晰。\n"
                     "2. 你可以调用企业数据接口查询库存、财务、销售、员工等信息。\n"
                     "3. 根据查询到的真实数据回答用户问题，数据如有不确定，明确说明。\n"
-                    "4. 不要使用表情符号。\n"
-                    "5. 回答应简短直接，适合快速阅读。"
+                    "4. 禁止使用 Markdown 标记（如 **、*、# 等），不要包含技术性描述。\n"
+                    "5. 不要使用表情符号。\n"
+                    "6. 回答应简短直接，适合快速阅读。"
                 )
             self._quick_ctx = ContextManager(
                 strategy="summary",
@@ -643,8 +703,8 @@ class BizAgent:
             len(context_msgs), len(self._quick_ctx.get_full_history()))
 
         try:
-            # 第一次调用，带工具定义
-            resp = self._call_api(context_msgs, use_json_mode=False, tools=self.tools)
+            # 第一次调用，带工具定义（只需识别意图，用小限制加速）
+            resp = self._call_api(context_msgs, use_json_mode=False, tools=self.tools, max_tokens=256)
             msg = resp["choices"][0]["message"]
             content = msg.get("content", "")
             tool_calls = msg.get("tool_calls")
@@ -653,24 +713,34 @@ class BizAgent:
 
             # 处理工具调用
             if tool_calls:
-                # 把模型的回复加入上下文
                 assistant_msg = {"role": "assistant", "content": content or None}
                 if tool_calls:
                     assistant_msg["tool_calls"] = tool_calls
                 context_msgs.append(assistant_msg)
 
-                # 逐个执行工具
+                # 逐个执行工具并记录结果
+                tool_results_data = []
                 for tc in tool_calls:
-                    tool_result = self._execute_tool(tc)
+                    raw_result = self._execute_tool(tc)
                     context_msgs.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
-                        "content": tool_result,
+                        "content": raw_result,
                     })
+                    try:
+                        parsed = json.loads(raw_result)
+                        parsed["_func_name"] = tc["function"]["name"]
+                        tool_results_data.append(parsed)
+                    except json.JSONDecodeError:
+                        pass
 
-                # 第二次调用，获取最终自然语言回复
-                resp2 = self._call_api(context_msgs, use_json_mode=False)
-                content = resp2["choices"][0]["message"].get("content", "")
+                # 尝试用摘要直接生成回复（跳过第二次 API 调用），失败则轻量回退
+                summary = self._summarize_tool_results(tool_results_data)
+                if summary:
+                    content = summary
+                else:
+                    resp2 = self._call_api(context_msgs, use_json_mode=False, max_tokens=512)
+                    content = resp2["choices"][0]["message"].get("content", "")
 
             # 清理响应中的函数调用标记等非自然语言内容
             content = self._clean_response_text(content)
@@ -1160,7 +1230,8 @@ class BizAgent:
             "1. 用纯中文自然语言回答。\n"
             "2. 基于提供的 API 数据分析并回答，严禁编造数据。\n"
             "3. 回答应专业简洁，突出重点数据和结论。\n"
-            "4. 输出格式为 JSON：{\"status\": \"success\", \"data\": {\"answer\": \"...\", \"details\": {...}}}"
+            "4. 禁止使用 Markdown 标记（如 **、*、# 等），不要包含技术性描述。\n"
+            "5. 输出格式为 JSON：{\"status\": \"success\", \"data\": {\"answer\": \"...\", \"details\": {...}}}"
         )
 
         api_context = []
