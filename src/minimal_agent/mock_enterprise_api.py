@@ -166,16 +166,19 @@ def query_employee(name: str) -> dict:
     """查询员工信息"""
     result = EMPLOYEES_DB.get(name)
     if result:
+        if result.get("status") == 0:
+            return {"status": "success", "data": {"name": name, "status": 0, "status_text": "已离职", "note": "该员工已离职，无在职信息"}}
         return {"status": "success", "data": result}
     return {"status": "success", "data": {"note": f"未找到员工 '{name}'"}}
 
 
 def list_employees_by_department(department: str) -> dict:
-    """按部门查询员工列表"""
+    """按部门查询员工列表（仅在职）"""
     rows = enterprise_db.get_employees_by_department(department)
-    if rows:
-        return {"status": "success", "data": {"department": department, "employees": rows, "count": len(rows)}}
-    return {"status": "success", "data": {"department": department, "employees": [], "count": 0}}
+    active = [r for r in rows if r.get("status") != 0]
+    if active:
+        return {"status": "success", "data": {"department": department, "employees": active, "count": len(active)}}
+    return {"status": "success", "data": {"department": department, "employees": [], "count": 0, "note": "该部门暂无在职员工"}}
 
 
 def add_employee(name: str, department: str, position: str, salary: int, hire_date: str = "") -> dict:
@@ -536,6 +539,13 @@ TOOL_DEFINITIONS = [
         }
     },
 ]
+
+# 写操作函数名集合（用于权限校验）
+WRITE_FUNCTIONS = {
+    "add_product", "adjust_stock", "record_sale", "add_financial_record", "reset_database",
+    "add_employee", "update_salary",
+    "add_customer",
+}
 
 # 函数名到实际函数的映射
 FUNCTION_MAP = {

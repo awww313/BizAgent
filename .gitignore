@@ -169,3 +169,8 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# BizAgent runtime artifacts
+charts/
+data/
+logs/

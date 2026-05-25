@@ -227,6 +227,7 @@ class ChatRequest(BaseModel):
     mode: Literal["quick", "smart", "analysis"] = Field("quick", description="对话模式: quick=快速问答 / smart=旧版智能对话（同 quick）/ analysis=深度分析+图表")
     session_id: str = Field("", description="会话 ID（留空自动生成）")
     enable_persistence: bool = Field(False, description="是否启用 SQLite 持久化存储")
+    role: Literal["admin", "employee"] = Field("admin", description="角色: admin=管理端（可增删改）, employee=员工端（仅查询）")
     # 文件参数
     file_content: str = Field("", description="文件内容（Base64 编码）")
     file_name: str = Field("", description="原文件名（带扩展名，用于判断文件类型）")
@@ -270,6 +271,9 @@ def chat(req: ChatRequest):
             logger.info(f"[File] 已解析: {req.file_name} ({len(file_text)} chars)")
 
         session_id, agent = get_or_create_agent(req.session_id, req.enable_persistence)
+        # 设置角色权限（admin=管理端可读写，employee=员工端仅查询）
+        agent.role = req.role
+        logger.info("[Role] session=%s role=%s", session_id, req.role)
         # 将对话模式存入会话元数据，供历史列表显示图标
         if req.enable_persistence:
             try:

@@ -20,12 +20,12 @@ from typing import Optional
 import requests
 
 from .prompts import BIZ_SYSTEM_PROMPT, TASK_PROMPTS
-from .mock_enterprise_api import TOOL_DEFINITIONS, FUNCTION_MAP, INVENTORY_DB, FINANCIAL_DB, SALES_DB, EMPLOYEES_DB, CUSTOMERS_DB
+from .mock_enterprise_api import TOOL_DEFINITIONS, FUNCTION_MAP, WRITE_FUNCTIONS, INVENTORY_DB, FINANCIAL_DB, SALES_DB, EMPLOYEES_DB, CUSTOMERS_DB
 from .context_manager import ContextManager, count_messages_tokens
 from .task_tracker import TaskTracker
 from .session_store import store as session_store
 from .intent_engine import IntentEngine, IntentResult
-from .analysis_ops import auto_analyze, financial_mom, financial_summary, sales_product_comparison, inventory_status_analysis
+from .analysis_ops import auto_analyze, financial_mom, financial_summary, sales_product_comparison, sales_monthly_trend, inventory_status_analysis
 from .visualizer import auto_chart, line_chart, bar_chart, pie_chart, clean_old_charts
 from .exceptions import (
     AgentError,
@@ -78,10 +78,10 @@ def _has_required_args(func, args: dict) -> tuple[bool, list[str]]:
 INTENT_ANALYSIS_MAP = {
     "库存查询": {"inventory_analysis"},
     "财务报告": {"financial_mom", "financial_summary"},
-    "销售分析": {"sales_comparison", "sales_extreme"},
-    "综合简报": {"financial_mom", "financial_summary", "sales_comparison", "sales_extreme", "inventory_analysis", "employee_headcount", "customer_tier_analysis"},
-    "对比分析": {"sales_comparison"},
-    "数据分析": {"financial_mom", "financial_summary", "sales_comparison", "sales_extreme"},
+    "销售分析": {"sales_comparison", "sales_extreme", "sales_trend"},
+    "综合简报": {"financial_mom", "financial_summary", "sales_comparison", "sales_extreme", "sales_trend", "inventory_analysis", "employee_headcount", "customer_tier_analysis"},
+    "对比分析": {"sales_comparison", "sales_trend"},
+    "数据分析": {"financial_mom", "financial_summary", "sales_comparison", "sales_extreme", "sales_trend"},
     "default": {"financial_mom", "financial_summary", "sales_comparison", "sales_extreme", "inventory_analysis"},
 }
 
@@ -123,18 +123,32 @@ class BizAgent:
         session_id: str = None,
         enable_tracking: bool = True,
         enable_persistence: bool = False,
+        role: str = "admin",
     ):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.task_type = task_type
         self.max_retries = max_retries
-        self.tools = tools or TOOL_DEFINITIONS
+        self.all_tools = tools or TOOL_DEFINITIONS
         self.session_id = session_id
         self._enable_tracking = enable_tracking
         self._enable_persistence = enable_persistence
         self._tracker: Optional[TaskTracker] = None
         self._intent_engine = IntentEngine()
+        self.role = role
+
+    def _get_tools_for_role(self) -> list:
+        """根据当前角色返回可用的工具列表。员工端仅暴露读操作工具。"""
+        if self.role == "employee":
+            return [t for t in (self.all_tools or [])
+                    if t.get("function", {}).get("name") not in WRITE_FUNCTIONS]
+        return self.all_tools
+
+    @property
+    def tools(self) -> list:
+        """向后兼容：返回当前角色可见的工具列表"""
+        return self._get_tools_for_role()
 
     def _ensure_session(self):
         """确保 session 在持久化存储中存在"""
@@ -177,9 +191,11 @@ class BizAgent:
             details = "，".join([f"{m}: {v} 件" for m, v in sales.items() if m != "total"])
             lines.append(f"- {pid}：{details}，合计 {sales['total']} 件")
 
-        lines.append("\n### 员工信息")
+        lines.append("\n### 员工信息（仅在职，status=1）")
         dept_order = {}
         for emp in EMPLOYEES_DB.values():
+            if emp.get("status") == 0:
+                continue
             dept = emp["department"]
             if dept not in dept_order:
                 dept_order[dept] = []
@@ -405,10 +421,34 @@ class BizAgent:
     # Function Calling 核心逻辑
     # ============================================================
 
+    def _check_write_permission(self, func_name: str) -> bool:
+        """检查当前角色是否有权限执行写操作"""
+        if func_name in WRITE_FUNCTIONS and self.role == "employee":
+            logger.warning("[Permission] 员工端尝试写操作 '%s' 被拦截", func_name)
+            return False
+        return True
+
+    @staticmethod
+    def _clean_response_text(text: str) -> str:
+        """清除 LLM 回复中的函数调用标记等非自然语言内容"""
+        if not text:
+            return text
+        # 移除 <tool_calls>...</tool_calls> XML 块
+        text = re.sub(r'<tool_calls>.*?</tool_calls>', '', text, flags=re.DOTALL)
+        # 移除 ```xml...``` 中的工具调用标记
+        text = re.sub(r'```(?:xml)?\s*<invoke\s+name=.*?```', '', text, flags=re.DOTALL)
+        return text.strip()
+
     def _execute_tool(self, tool_call: dict) -> str:
         """执行单个工具调用，返回 JSON 字符串结果"""
         func_name = tool_call["function"]["name"]
         func_args = json.loads(tool_call["function"]["arguments"])
+
+        if not self._check_write_permission(func_name):
+            return json.dumps({
+                "status": "error",
+                "data": {"note": "您暂无该权限。员工端仅支持数据查询，如需增删改请切换至管理端。"},
+            }, ensure_ascii=False)
 
         func = FUNCTION_MAP.get(func_name)
         if not func:
@@ -502,6 +542,7 @@ class BizAgent:
 
             resp2 = self._call_api(messages, use_json_mode=False)
             final_content = resp2["choices"][0]["message"]["content"]
+            final_content = self._clean_response_text(final_content)
             logger.info("[FunctionCall] 最终回复: %s", final_content[:200])
 
             try:
@@ -603,6 +644,9 @@ class BizAgent:
                 # 第二次调用，获取最终自然语言回复
                 resp2 = self._call_api(context_msgs, use_json_mode=False)
                 content = resp2["choices"][0]["message"].get("content", "")
+
+            # 清理响应中的函数调用标记等非自然语言内容
+            content = self._clean_response_text(content)
 
             # 记入历史
             self._quick_ctx.add_assistant(content)
@@ -821,6 +865,13 @@ class BizAgent:
                                 tracker.end_step("failed", f"缺少参数: {missing}")
                             continue
                         try:
+                            if not self._check_write_permission(api_name):
+                                api_results[api_name] = {"status": "error", "error": "您暂无该权限。员工端仅支持数据查询，如需增删改请切换至管理端。"}
+                                if tracker:
+                                    tracker.start_step("tool_call", f"{api_name} -> 权限不足")
+                                    tracker.end_step("failed", "员工端无写权限")
+                                continue
+
                             if tracker:
                                 tracker.start_step("tool_call", f"{api_name}({args})")
                             api_data = func(**args)
@@ -1016,6 +1067,13 @@ class BizAgent:
                             tracker.end_step("failed", f"缺少参数: {missing}")
                         continue
                     try:
+                        if not self._check_write_permission(api_name):
+                            api_results[api_name] = {"status": "error", "error": "您暂无该权限。员工端仅支持数据查询，如需增删改请切换至管理端。"}
+                            if tracker:
+                                tracker.start_step("tool_call", f"{api_name} -> 权限不足")
+                                tracker.end_step("failed", "员工端无写权限")
+                            continue
+
                         if tracker:
                             tracker.start_step("tool_call", f"{api_name}({args})")
                         api_data = func(**args)
@@ -1033,7 +1091,8 @@ class BizAgent:
                 tracker.start_step("analysis", "执行统计计算")
 
             clean_old_charts()
-            all_analysis = auto_analyze(api_results)
+            time_filter = result.params.get("time")
+            all_analysis = auto_analyze(api_results, time_filter=time_filter)
             # 按意图过滤分析结果，只保留相关类型
             analysis_results = _filter_analysis_by_intent(all_analysis, result.intent)
             logger.info("[AnalysisMode] 意图=%s, 分析类型=%s", result.intent, list(analysis_results.keys()))
@@ -1051,9 +1110,14 @@ class BizAgent:
 
                 try:
                     intent = result.intent
-                    # 按意图选择主要图表类型
+                    params = result.params
+                    is_trend_query = any(kw in user_input for kw in ["趋势", "走势", "趋势图", "变化", "增长", "下降", "波动"])
+
+                    # 时间标签美化
+                    time_label = params.get("time", "")
+                    time_display = {"all": "全年", "latest": "最近"}.get(time_label, time_label)
+
                     if intent == "库存查询":
-                        # 优先库存分析图
                         inv = analysis_results.get("inventory_analysis", {})
                         if inv and inv.get("warehouse_distribution"):
                             labels_wh = list(inv["warehouse_distribution"].keys())
@@ -1062,23 +1126,42 @@ class BizAgent:
                             if "error" not in pc:
                                 charts.append(pc)
                     elif intent in ("财务报告", "数据分析"):
-                        # 优先财务趋势图
                         mom = analysis_results.get("financial_mom", [])
                         if mom and len(mom) >= 2:
                             months = [item["period"] for item in mom]
                             values = [item["current_value"] for item in mom]
-                            lc = line_chart(months, [{"label": "指标值", "values": values}], title=f"财务环比趋势 — {intent}")
+                            label = f"财务环比趋势"
+                            if time_display:
+                                label += f"（{time_display}）"
+                            lc = line_chart(months, [{"label": "指标值", "values": values}], title=label)
                             if "error" not in lc:
                                 charts.append(lc)
                     elif intent in ("销售分析", "对比分析"):
-                        # 优先销售对比柱状图
-                        comparison = analysis_results.get("sales_comparison", [])
-                        if comparison:
-                            labels = [c["product"] for c in comparison]
-                            values = [c["total_sales"] for c in comparison]
-                            bc = bar_chart(labels, values, title="产品销量对比", y_label="销量（件）")
-                            if "error" not in bc:
-                                charts.append(bc)
+                        # 趋势类查询 → 月度趋势折线图
+                        if is_trend_query or not analysis_results.get("sales_comparison"):
+                            trend = analysis_results.get("sales_trend", [])
+                            if trend:
+                                months = [item["month"] for item in trend]
+                                values = [item["sales"] for item in trend]
+                                title = "月度销售趋势"
+                                if time_display:
+                                    title += f"（{time_display}）"
+                                lc = line_chart(months, [{"label": "总销量", "values": values}],
+                                                title=title, y_label="销量（件）")
+                                if "error" not in lc:
+                                    charts.append(lc)
+                        # 默认 → 产品对比柱状图
+                        if not charts:
+                            comparison = analysis_results.get("sales_comparison", [])
+                            if comparison:
+                                labels = [c["product"] for c in comparison]
+                                values = [c["total_sales"] for c in comparison]
+                                title = "产品销量对比"
+                                if time_display:
+                                    title += f"（{time_display}）"
+                                bc = bar_chart(labels, values, title=title, y_label="销量（件）")
+                                if "error" not in bc:
+                                    charts.append(bc)
                     elif intent in ("综合简报",):
                         # 综合简报：尝试生成 财务汇总柱状图
                         summary = analysis_results.get("financial_summary", {})

@@ -18,7 +18,7 @@ DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 os.makedirs(DATA_DIR, exist_ok=True)
 
 DB_PATH = DATA_DIR / "enterprise.db"
-SCHEMA_VERSION = 3  # 升级版本号以触发重新填充
+SCHEMA_VERSION = 4  # v4: 员工 status 改为 INTEGER（1在职/0已离职）
 
 
 
@@ -49,61 +49,65 @@ class EnterpriseDB:
         conn.execute("PRAGMA busy_timeout=5000")
         return conn
 
+    def _init_db_tables(self, conn: sqlite3.Connection):
+        """执行建表 DDL（供初始化和迁移时共用）"""
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS inventory (
+                product TEXT PRIMARY KEY,
+                stock INTEGER NOT NULL DEFAULT 0,
+                warehouse TEXT NOT NULL DEFAULT '',
+                unit TEXT NOT NULL DEFAULT '件',
+                last_updated TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS financial (
+                period TEXT PRIMARY KEY,
+                revenue INTEGER NOT NULL DEFAULT 0,
+                cost INTEGER NOT NULL DEFAULT 0,
+                profit INTEGER NOT NULL DEFAULT 0,
+                margin REAL NOT NULL DEFAULT 0.0
+            );
+
+            CREATE TABLE IF NOT EXISTS sales (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                product TEXT NOT NULL,
+                period TEXT NOT NULL,
+                amount INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(product, period)
+            );
+
+            CREATE TABLE IF NOT EXISTS employees (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                department TEXT NOT NULL,
+                position TEXT NOT NULL,
+                salary INTEGER NOT NULL,
+                hire_date TEXT NOT NULL,
+                status INTEGER NOT NULL DEFAULT 1
+            );
+
+            CREATE TABLE IF NOT EXISTS customers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                tier TEXT NOT NULL DEFAULT '普通',
+                region TEXT NOT NULL DEFAULT '',
+                total_spent INTEGER NOT NULL DEFAULT 0,
+                last_purchase TEXT,
+                contact TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_sales_product ON sales(product);
+            CREATE INDEX IF NOT EXISTS idx_sales_period ON sales(period);
+            CREATE INDEX IF NOT EXISTS idx_employees_dept ON employees(department);
+            CREATE INDEX IF NOT EXISTS idx_customers_tier ON customers(tier);
+            CREATE INDEX IF NOT EXISTS idx_customers_region ON customers(region);
+        """)
+
     def _init_db(self):
         """创建所有表（IF NOT EXISTS，多次运行安全）"""
         conn = self._get_conn()
         try:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS inventory (
-                    product TEXT PRIMARY KEY,
-                    stock INTEGER NOT NULL DEFAULT 0,
-                    warehouse TEXT NOT NULL DEFAULT '',
-                    unit TEXT NOT NULL DEFAULT '件',
-                    last_updated TEXT NOT NULL DEFAULT ''
-                );
-
-                CREATE TABLE IF NOT EXISTS financial (
-                    period TEXT PRIMARY KEY,
-                    revenue INTEGER NOT NULL DEFAULT 0,
-                    cost INTEGER NOT NULL DEFAULT 0,
-                    profit INTEGER NOT NULL DEFAULT 0,
-                    margin REAL NOT NULL DEFAULT 0.0
-                );
-
-                CREATE TABLE IF NOT EXISTS sales (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    product TEXT NOT NULL,
-                    period TEXT NOT NULL,
-                    amount INTEGER NOT NULL DEFAULT 0,
-                    UNIQUE(product, period)
-                );
-
-                CREATE TABLE IF NOT EXISTS employees (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    department TEXT NOT NULL,
-                    position TEXT NOT NULL,
-                    salary INTEGER NOT NULL,
-                    hire_date TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT '在职'
-                );
-
-                CREATE TABLE IF NOT EXISTS customers (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    tier TEXT NOT NULL DEFAULT '普通',
-                    region TEXT NOT NULL DEFAULT '',
-                    total_spent INTEGER NOT NULL DEFAULT 0,
-                    last_purchase TEXT,
-                    contact TEXT
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_sales_product ON sales(product);
-                CREATE INDEX IF NOT EXISTS idx_sales_period ON sales(period);
-                CREATE INDEX IF NOT EXISTS idx_employees_dept ON employees(department);
-                CREATE INDEX IF NOT EXISTS idx_customers_tier ON customers(tier);
-                CREATE INDEX IF NOT EXISTS idx_customers_region ON customers(region);
-            """)
+            self._init_db_tables(conn)
             conn.commit()
         finally:
             conn.close()
@@ -121,15 +125,16 @@ class EnterpriseDB:
                     self._seed_all(conn)
                 return
 
-            # 版本不一致 → 清空并重建
-            logger.info("[EnterpriseDB] Schema 版本变化 (v%d → v%d)，重新初始化数据...", version, SCHEMA_VERSION)
+            # 版本不一致 → 重建所有表使 DDL 变更生效，然后重新填充
+            logger.info("[EnterpriseDB] Schema 版本变化 (v%d → v%d)，重建表结构...", version, SCHEMA_VERSION)
             conn.executescript("""
-                DELETE FROM sales;
-                DELETE FROM financial;
-                DELETE FROM inventory;
-                DELETE FROM employees;
-                DELETE FROM customers;
+                DROP TABLE IF EXISTS sales;
+                DROP TABLE IF EXISTS financial;
+                DROP TABLE IF EXISTS inventory;
+                DROP TABLE IF EXISTS employees;
+                DROP TABLE IF EXISTS customers;
             """)
+            self._init_db_tables(conn)
             self._seed_all(conn)
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             conn.commit()
@@ -272,21 +277,21 @@ class EnterpriseDB:
 
         # 员工
         employees = [
-            ("张伟",   "技术部", "高级工程师",  25000, "2020-03-15", "在职"),
-            ("李娜",   "市场部", "市场总监",    30000, "2019-06-01", "在职"),
-            ("王强",   "销售部", "销售经理",    22000, "2021-01-10", "在职"),
-            ("赵芳",   "财务部", "财务主管",    20000, "2018-09-20", "在职"),
-            ("刘洋",   "技术部", "产品经理",    23000, "2020-07-01", "在职"),
-            ("陈静",   "人事部", "HR 经理",     18000, "2021-03-15", "在职"),
-            ("孙磊",   "销售部", "销售代表",    15000, "2022-02-01", "在职"),
-            ("周敏",   "技术部", "前端工程师",  18000, "2022-06-01", "在职"),
-            ("吴涛",   "技术部", "后端工程师",  20000, "2021-09-15", "在职"),
-            ("郑丽",   "市场部", "品牌专员",    14000, "2023-01-10", "在职"),
-            ("黄鑫",   "技术部", "算法工程师",  28000, "2021-11-01", "在职"),
-            ("林芳",   "财务部", "会计",        12000, "2023-06-15", "在职"),
-            ("何明",   "销售部", "大客户经理",  26000, "2020-08-20", "在职"),
-            ("唐雅",   "人事部", "招聘专员",    11000, "2024-01-10", "试用"),
-            ("曹磊",   "技术部", "运维工程师",  17000, "2022-09-01", "在职"),
+            ("张伟",   "技术部", "高级工程师",  25000, "2020-03-15", 1),
+            ("李娜",   "市场部", "市场总监",    30000, "2019-06-01", 1),
+            ("王强",   "销售部", "销售经理",    22000, "2021-01-10", 1),
+            ("赵芳",   "财务部", "财务主管",    20000, "2018-09-20", 1),
+            ("刘洋",   "技术部", "产品经理",    23000, "2020-07-01", 1),
+            ("陈静",   "人事部", "HR 经理",     18000, "2021-03-15", 1),
+            ("孙磊",   "销售部", "销售代表",    15000, "2022-02-01", 1),
+            ("周敏",   "技术部", "前端工程师",  18000, "2022-06-01", 1),
+            ("吴涛",   "技术部", "后端工程师",  20000, "2021-09-15", 1),
+            ("郑丽",   "市场部", "品牌专员",    14000, "2023-01-10", 1),
+            ("黄鑫",   "技术部", "算法工程师",  28000, "2021-11-01", 1),
+            ("林芳",   "财务部", "会计",        12000, "2023-06-15", 1),
+            ("何明",   "销售部", "大客户经理",  26000, "2020-08-20", 1),
+            ("唐雅",   "人事部", "招聘专员",    11000, "2024-01-10", 1),
+            ("曹磊",   "技术部", "运维工程师",  17000, "2022-09-01", 1),
         ]
         conn.executemany(
             "INSERT INTO employees (name, department, position, salary, hire_date, status) VALUES (?, ?, ?, ?, ?, ?)",
@@ -487,7 +492,7 @@ class EnterpriseDB:
         finally:
             conn.close()
 
-    def add_employee(self, name: str, department: str, position: str, salary: int, hire_date: str = "", status: str = "在职") -> bool:
+    def add_employee(self, name: str, department: str, position: str, salary: int, hire_date: str = "", status: int = 1) -> bool:
         conn = self._get_conn()
         try:
             conn.execute(

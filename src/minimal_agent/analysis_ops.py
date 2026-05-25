@@ -10,6 +10,7 @@
 """
 
 import logging
+import re
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -54,8 +55,8 @@ def financial_mom(data: dict[str, dict], metric: str = "revenue") -> list[dict]:
         [{"period", "previous_period", "current_value", "previous_value", "change", "growth_rate"}, ...]
     """
     months = sorted(data.keys())
-    # 只保留月份粒度（去掉 Q1 这类汇总数据）
-    months = [m for m in months if "-Q" not in m]
+    # 只保留月份粒度（去掉季度/年度汇总）
+    months = [m for m in months if "-Q" not in m and "年" not in m]
 
     results = []
     for i in range(1, len(months)):
@@ -83,7 +84,7 @@ def financial_summary(data: dict[str, dict]) -> dict:
         {"total_revenue", "total_cost", "total_profit", "avg_margin",
          "max_revenue_month", "min_revenue_month", ...}
     """
-    months = {k: v for k, v in data.items() if "-Q" not in k}
+    months = {k: v for k, v in data.items() if "-Q" not in k and "年" not in k}
 
     revenues = [m["revenue"] for m in months.values()]
     costs = [m["cost"] for m in months.values()]
@@ -312,8 +313,11 @@ def employee_headcount_by_department(data: dict[str, dict]) -> dict:
         {"departments": [{"department", "count", "avg_salary", "total_salary"}, ...],
          "total_employees", "avg_salary_all"}
     """
+    # 仅统计在职员工（status=1）
+    active = [emp for emp in data.values() if emp.get("status", 1) != 0]
+
     dept_stats: dict[str, dict] = {}
-    for emp in data.values():
+    for emp in active:
         dept = emp["department"]
         if dept not in dept_stats:
             dept_stats[dept] = {"count": 0, "salary_sum": 0}
@@ -330,7 +334,7 @@ def employee_headcount_by_department(data: dict[str, dict]) -> dict:
         })
 
     total = sum(stats["count"] for stats in dept_stats.values())
-    all_salaries = [emp["salary"] for emp in data.values()]
+    all_salaries = [emp["salary"] for emp in active]
 
     return {
         "departments": departments,
@@ -356,9 +360,12 @@ def employee_salary_distribution(data: dict[str, dict]) -> list[dict]:
         (25001, 999999, "25K 以上"),
     ]
 
+    # 仅统计在职员工（status=1）
+    active = [emp for emp in data.values() if emp.get("status", 1) != 0]
+
     result = []
     for lo, hi, label in brackets:
-        matched = [emp for emp in data.values() if lo <= emp["salary"] <= hi]
+        matched = [emp for emp in active if lo <= emp["salary"] <= hi]
         if matched:
             result.append({
                 "range": label,
@@ -436,10 +443,51 @@ def customer_region_analysis(data: dict[str, dict]) -> dict:
 
 
 # ============================================================
+# 时间筛选辅助函数
+# ============================================================
+
+def _expand_time_filter(time_filter: str) -> list[str]:
+    """将时间筛选词展开为月份列表，空列表表示不筛选"""
+    if not time_filter or time_filter in ("all", "latest"):
+        return []
+    q_map = {
+        "2025-Q1": ["2025-01", "2025-02", "2025-03"],
+        "2025-Q2": ["2025-04", "2025-05", "2025-06"],
+        "2025-Q3": ["2025-07", "2025-08", "2025-09"],
+        "2025-Q4": ["2025-10", "2025-11", "2025-12"],
+    }
+    if time_filter in q_map:
+        return q_map[time_filter]
+    if re.match(r"^\d{4}-\d{2}$", time_filter):
+        return [time_filter]
+    return []
+
+
+def _filter_financial_by_time(data: dict, months: list[str]) -> dict:
+    """只保留指定月份的财务数据（保留季度汇总行）"""
+    if not months:
+        return data
+    return {k: v for k, v in data.items() if k in months or "-Q" in k}
+
+
+def _filter_sales_by_time(data: dict, months: list[str]) -> dict:
+    """只保留指定月份的销售数据，重新计算合计"""
+    if not months:
+        return data
+    filtered = {}
+    for product, product_data in data.items():
+        kept = {k: v for k, v in product_data.items() if k in months}
+        if kept:
+            kept["total"] = sum(kept.values())
+            filtered[product] = kept
+    return filtered
+
+
+# ============================================================
 # 组合分析（给 BizAgent 调用）
 # ============================================================
 
-def auto_analyze(api_results: dict[str, Any]) -> dict:
+def auto_analyze(api_results: dict[str, Any], time_filter: Optional[str] = None) -> dict:
     """
     根据 API 返回结果自动选择并执行分析算子。
 
@@ -452,6 +500,13 @@ def auto_analyze(api_results: dict[str, Any]) -> dict:
          "inventory_analysis": {...}, ...}
     """
     from .mock_enterprise_api import INVENTORY_DB, FINANCIAL_DB, SALES_DB, EMPLOYEES_DB, CUSTOMERS_DB
+
+    # 根据时间筛选词过滤数据，使分析结果与用户问题匹配
+    if time_filter:
+        months = _expand_time_filter(time_filter)
+        if months:
+            FINANCIAL_DB = _filter_financial_by_time(FINANCIAL_DB, months)
+            SALES_DB = _filter_sales_by_time(SALES_DB, months)
 
     analysis = {}
 
@@ -468,6 +523,7 @@ def auto_analyze(api_results: dict[str, Any]) -> dict:
         try:
             analysis["sales_comparison"] = sales_product_comparison(SALES_DB)
             analysis["sales_extreme"] = sales_extreme(SALES_DB)
+            analysis["sales_trend"] = sales_monthly_trend(SALES_DB)
         except Exception as e:
             logger.warning("[Analysis] 销售分析失败: %s", e)
 

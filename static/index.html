@@ -398,6 +398,29 @@
   .chart-toggle.off { background: transparent; color: var(--blue); }
   .chart-toggle.off:hover { background: #eff6ff; }
 
+  /* Role selector */
+  .role-badge {
+    margin-left: auto; font-size: 10px; padding: 2px 8px;
+    border-radius: 4px; font-weight: 600; letter-spacing: .3px;
+    transition: var(--transition);
+  }
+  .role-badge.admin { background: rgba(34,197,94,.15); color: #22c55e; }
+  .role-badge.employee { background: rgba(245,158,11,.15); color: #f59e0b; }
+
+  /* Role indicator banner */
+  .role-indicator {
+    display: none; align-items: center; justify-content: center; gap: 6px;
+    padding: 6px 16px; font-size: 12px; font-weight: 500; flex-shrink: 0;
+    border-bottom: 1px solid; transition: var(--transition);
+  }
+  .role-indicator.visible { display: flex; }
+  .role-indicator.employee {
+    background: #fef3c7; color: #92400e; border-color: #fde68a;
+  }
+  .role-indicator.admin {
+    background: #d1fae5; color: #065f46; border-color: #a7f3d0;
+  }
+
   /* Mode-filtered quick chips */
   .quick-chip[data-mode="quick"] { display: none; }
   .quick-chip[data-mode="analysis"] { display: none; }
@@ -438,6 +461,22 @@
       </div>
 
       <div class="sidebar-group">
+        <div class="sidebar-group-title">身份选择</div>
+        <div class="mode-pills" id="roleGroup">
+          <button class="mode-pill active" data-role="admin">
+            <span class="icon">⚙️</span>
+            <span>管理端</span>
+            <span class="role-badge admin">读写</span>
+          </button>
+          <button class="mode-pill" data-role="employee">
+            <span class="icon">🛡️</span>
+            <span>员工端</span>
+            <span class="role-badge employee">只读</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="sidebar-group">
         <div class="sidebar-group-title">
           历史对话
           <span style="display:inline-flex;gap:2px;align-items:center;">
@@ -465,6 +504,11 @@
     <div class="topbar">
       <button class="toggle-sidebar" id="toggleSidebar">&#9776;</button>
       <h2 id="topbarTitle">BizAgent</h2>
+    </div>
+
+    <div class="role-indicator admin" id="roleIndicator">
+      <span>⚙️</span>
+      <span id="roleIndicatorText">管理端模式 — 可进行数据读写操作</span>
     </div>
 
     <div class="chat-area" id="chatArea">
@@ -517,6 +561,7 @@
 
   const state = {
     mode: 'quick',
+    role: 'admin',
     sessionId: genId(),
     fileData: null,
     fileName: '',
@@ -629,6 +674,39 @@
       var desc = document.getElementById('welcomeDesc');
       if (desc) desc.textContent = getWelcomeText(mode);
     }
+    if (window.innerWidth <= 768) sidebar.classList.remove('mobile-open');
+  });
+
+  // Role switching
+  var roleGroup = document.getElementById('roleGroup');
+  var roleIndicator = document.getElementById('roleIndicator');
+  var roleIndicatorText = document.getElementById('roleIndicatorText');
+
+  function updateRoleUI(role) {
+    state.role = role;
+    roleGroup.querySelectorAll('.mode-pill').forEach(function(b) { b.classList.remove('active'); });
+    roleGroup.querySelector('[data-role="' + role + '"]').classList.add('active');
+    roleIndicator.className = 'role-indicator visible ' + role;
+    if (role === 'admin') {
+      roleIndicatorText.textContent = '管理端模式 — 可进行数据读写操作';
+    } else {
+      roleIndicatorText.textContent = '员工端模式 — 仅可查询数据，无法进行增删改操作';
+    }
+  }
+
+  roleGroup.addEventListener('click', function(e) {
+    var btn = e.target.closest('.mode-pill');
+    if (!btn) return;
+    var role = btn.dataset.role;
+    if (role === state.role) return;
+    updateRoleUI(role);
+    // 切换身份 = 新开对话
+    state.sessionId = genId();
+    updateSessionDisplay();
+    chatArea.innerHTML = '';
+    state.fileData = null; state.fileName = '';
+    fileBadge.classList.remove('visible'); fileInput.value = '';
+    showWelcome();
     if (window.innerWidth <= 768) sidebar.classList.remove('mobile-open');
   });
 
@@ -748,14 +826,22 @@
         if (!para) return;
         var p = document.createElement('p');
         p.style.cssText = 'margin-bottom:8px;';
-        p.textContent = para;
+        p.innerHTML = para.split('\n').map(function(line) { return esc(line); }).join('<br>');
         answerPara.appendChild(p);
       });
       container.appendChild(answerPara);
     }
 
-    var detailObj = d.详情 || d.details;
-    if (detailObj && typeof detailObj === 'object' && Object.keys(detailObj).length > 0) {
+    // 收集 answer 之外的所有字段，统一放入可折叠的详情区域
+    var detailObj = d.详情 || d.details || {};
+    if (typeof detailObj !== 'object') detailObj = {};
+    for (var key in d) {
+      if (!d.hasOwnProperty(key)) continue;
+      if (key === 'status' || key === 'answer' || key === 'details' || key === '回答' || key === '详情') continue;
+      if (!(key in detailObj)) detailObj[key] = d[key];
+    }
+    var detailKeys = Object.keys(detailObj);
+    if (detailKeys.length > 0) {
       var detailToggle = document.createElement('div');
       detailToggle.style.cssText = 'margin-top:' + (answerText ? '12px' : '0') + '; font-size:12px; color:var(--blue); cursor:pointer; user-select:none;';
       detailToggle.textContent = '▶ 查看详细数据';
@@ -771,47 +857,6 @@
       });
       container.appendChild(detailToggle);
       container.appendChild(detailContent);
-    }
-
-    var leftover = {};
-    for (var key in d) {
-      if (!d.hasOwnProperty(key)) continue;
-      if (key === 'status' || key === 'answer' || key === 'details' || key === '回答' || key === '详情') continue;
-      leftover[key] = d[key];
-    }
-    if (Object.keys(leftover).length > 0) {
-      if (answerText) {
-        var suppWrap = document.createElement('div');
-        suppWrap.style.cssText = 'margin-top:12px; border-top:1px solid var(--gray-200); padding-top:10px;';
-        for (var key in leftover) {
-          var card = document.createElement('div');
-          card.className = 'biz-card';
-          var kl = document.createElement('div');
-          kl.className = 'k';
-          kl.textContent = fmtKey(key);
-          card.appendChild(kl);
-          var vl = document.createElement('div');
-          vl.className = 'v';
-          renderFieldValue(vl, leftover[key]);
-          card.appendChild(vl);
-          suppWrap.appendChild(card);
-        }
-        container.appendChild(suppWrap);
-      } else {
-        for (var key in leftover) {
-          var card = document.createElement('div');
-          card.className = 'biz-card';
-          var kl = document.createElement('div');
-          kl.className = 'k';
-          kl.textContent = fmtKey(key);
-          card.appendChild(kl);
-          var vl = document.createElement('div');
-          vl.className = 'v';
-          renderFieldValue(vl, leftover[key]);
-          card.appendChild(vl);
-          container.appendChild(card);
-        }
-      }
     }
   }
 
@@ -999,6 +1044,7 @@
     chatArea.appendChild(d);
   }
   showWelcome();
+  updateRoleUI(state.role);
 
   async function sendMessage() {
     if (state.loading) return;
@@ -1024,6 +1070,7 @@
       mode: state.mode,
       session_id: state.sessionId,
       enable_persistence: true,
+      role: state.role,
     };
     if (state.fileData) {
       payload.file_content = state.fileData;
