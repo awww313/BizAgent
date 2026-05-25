@@ -43,9 +43,9 @@
   }
 
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  html { height: 100%; }
+  html { height: 100%; overflow: hidden; }
   body {
-    height: 100%; font-family: var(--font); font-size: 14px; color: var(--gray-800);
+    height: 100%; overflow: hidden; font-family: var(--font); font-size: 14px; color: var(--gray-800);
     background: var(--gray-50); -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
   }
   ::-webkit-scrollbar { width: 6px; }
@@ -133,10 +133,12 @@
   .sidebar-brand h1 .agent { color: var(--gray-600); text-shadow: 0 1px 3px rgba(0,0,0,.04); }
   .sidebar-brand .subtitle { font-size: 12px; color: var(--gray-400); margin-top: 2px; letter-spacing: .3px; }
 
-  .sidebar-content { flex: 1; overflow-y: auto; padding: 16px 0; position: relative; }
+  .sidebar-content { flex: 1; display: flex; flex-direction: column; overflow-y: auto; padding: 16px 0; position: relative; }
 
-  .sidebar-group { padding: 0 16px; margin-bottom: 20px; }
+  .sidebar-group { padding: 0 16px; margin-bottom: 20px; flex-shrink: 0; }
   .sidebar-group:last-child { margin-bottom: 0; }
+  .sidebar-group.grow { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .sidebar-group.grow .history-list { flex: 1; min-height: 0; }
   .sidebar-group-title {
     font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.2px;
     color: var(--gray-500); padding: 0 8px; margin-bottom: 8px; font-family: var(--font);
@@ -209,10 +211,10 @@
   .clear-btn:hover { color: #ef4444; background: rgba(239,68,68,.15); }
   @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
-  .history-list { max-height: 280px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+  .history-list { overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
   .history-empty { font-size: 12px; color: var(--gray-500); padding: 12px 8px; text-align: center; }
   .history-item {
-    display: flex; flex-direction: column; gap: 4px; padding: 12px 14px;
+    display: flex; flex-direction: column; gap: 4px; padding: 16px 18px;
     border-radius: var(--radius-sm); cursor: pointer; font-size: 13px;
     color: var(--gray-600); transition: var(--transition);
     border: none; background: transparent; width: 100%; text-align: left;
@@ -355,11 +357,11 @@
     align-items: center; justify-content: center; font-size: 14px; font-weight: 700;
     flex-shrink: 0; margin-top: 2px;
   }
-  .message.user .msg-avatar { background: var(--blue); color: #fff; box-shadow: 0 2px 8px rgba(0,82,255,.25); }
   .message.assistant .msg-avatar {
-    background: linear-gradient(135deg, var(--navy), var(--navy-mid)); color: var(--gold);
-    box-shadow: 0 2px 8px rgba(10,22,40,.2);
+    background: linear-gradient(135deg, var(--blue), var(--blue-light)); color: #fff;
+    box-shadow: var(--shadow-accent);
   }
+  .message.user .msg-avatar { background: var(--blue-bg); color: var(--blue); box-shadow: 0 2px 8px rgba(0,82,255,.12); }
 
   .msg-body {
     padding: 14px 18px; border-radius: var(--radius); line-height: 1.7; word-break: break-word;
@@ -517,20 +519,9 @@
   .role-badge.employee { background: rgba(245,158,11,.12); color: #d97706; border: 1px solid rgba(245,158,11,.2); }
 
   /* Role indicator banner */
-  .role-indicator {
-    display: none; align-items: center; justify-content: center; gap: 6px;
-    padding: 6px 16px; font-size: 12px; font-weight: 500; flex-shrink: 0;
-    border-bottom: 1px solid; transition: var(--transition);
-  }
-  .role-indicator.visible { display: flex; }
-  .role-indicator.employee {
-    background: #fffbeb; color: #92400e; border-color: #fde68a;
-  }
-  .role-indicator.admin {
-    background: #f0fdf4; color: #166534; border-color: #bbf7d0;
-  }
+  /* role-indicator removed */
 
-  /* Mode-filtered quick chips */
+  /* Quick chips — mode-specific visibility */
   .quick-chip[data-mode="quick"] { display: none; }
   .quick-chip[data-mode="analysis"] { display: none; }
   body.mode-quick .quick-chip[data-mode="quick"] { display: inline-block; }
@@ -594,7 +585,7 @@
         </div>
       </div>
 
-      <div class="sidebar-group">
+      <div class="sidebar-group grow">
         <div class="sidebar-group-title">
           历史对话
           <span style="display:inline-flex;gap:2px;align-items:center;">
@@ -624,11 +615,6 @@
       <h2 id="topbarTitle">BizAgent</h2>
     </div>
 
-    <div class="role-indicator admin" id="roleIndicator">
-      <span>⚙️</span>
-      <span id="roleIndicatorText">管理端模式 — 可进行数据读写操作</span>
-    </div>
-
     <div class="chat-area" id="chatArea">
       <!-- Welcome screen shown by JS -->
     </div>
@@ -637,14 +623,23 @@
       <span class="chart-toggle off" id="chartToggle">
         <span id="chartToggleLabel">图表生成</span>
       </span>
-      <button class="quick-chip" data-mode="quick" data-q="帮我查一下 A 产品的库存">查库存</button>
-      <button class="quick-chip" data-mode="quick" data-q="分析一下最近的销售情况">查销售情况</button>
-      <button class="quick-chip" data-mode="quick" data-q="查询技术部有哪些员工">找员工</button>
-      <button class="quick-chip" data-mode="quick" data-q="VIP 客户有哪些">找客户</button>
-      <button class="quick-chip" data-mode="analysis" data-q="分析一下 2025 年 Q1 的销售情况">销售分析</button>
-      <button class="quick-chip" data-mode="analysis" data-q="分析一下库存变动情况">库存变动</button>
-      <button class="quick-chip" data-mode="analysis" data-q="给我生成一份当前经营简报">简报生成</button>
-      <button class="quick-chip" data-mode="analysis" data-q="全面分析公司经营状况">全面评估</button>
+      <button class="quick-chip" data-mode="quick" data-q="查一下各类别的销售额">各类别销售额</button>
+      <button class="quick-chip" data-mode="quick" data-q="哪个地区卖得最好">最佳区域</button>
+      <button class="quick-chip" data-mode="quick" data-q="Technology 品类销售情况">Technology</button>
+      <button class="quick-chip" data-mode="quick" data-q="利润最高的产品有哪些">最盈利产品</button>
+      <button class="quick-chip" data-mode="quick" data-q="Consumer 客户群消费多少">客户群消费</button>
+      <button class="quick-chip" data-mode="quick" data-q="月度销售趋势如何">销售趋势</button>
+      <button class="quick-chip" data-mode="quick" data-q="哪些产品在亏损">亏损产品</button>
+      <button class="quick-chip" data-mode="quick" data-q="Superstore 整体销售概况">销售概况</button>
+      <!-- analysis 模式快捷标签 -->
+      <button class="quick-chip" data-mode="analysis" data-q="分析各品类销售额与利润对比">品类深度对比</button>
+      <button class="quick-chip" data-mode="analysis" data-q="各区域销售业绩排名及利润分析">区域业绩分析</button>
+      <button class="quick-chip" data-mode="analysis" data-q="月度销售趋势与季节性分析">月度趋势分析</button>
+      <button class="quick-chip" data-mode="analysis" data-q="亏损产品的根因与改进分析">亏损根因分析</button>
+      <button class="quick-chip" data-mode="analysis" data-q="不同客户群消费行为对比">客户群行为分析</button>
+      <button class="quick-chip" data-mode="analysis" data-q="畅销产品特征与排行榜">畅销产品分析</button>
+      <button class="quick-chip" data-mode="analysis" data-q="按州分析销售分布与地理洞察">地理分布分析</button>
+      <button class="quick-chip" data-mode="analysis" data-q="全维度经营状况综合分析报告">综合经营分析</button>
     </div>
 
     <div class="input-area">
@@ -786,7 +781,6 @@
     var names = { quick: '快速对话', smart: '快速对话(旧)', analysis: '深度分析' };
     topbarTitle.textContent = 'BizAgent — ' + (names[mode] || mode);
     document.getElementById('chartToggle').classList.toggle('visible', mode === 'analysis');
-    // Update welcome description if welcome screen is visible
     var ws = document.getElementById('welcomeScreen');
     if (ws) {
       var desc = document.getElementById('welcomeDesc');
@@ -795,21 +789,13 @@
     if (window.innerWidth <= 768) sidebar.classList.remove('mobile-open');
   });
 
-  // Role switching
+  // Role switching (no indicator bar)
   var roleGroup = document.getElementById('roleGroup');
-  var roleIndicator = document.getElementById('roleIndicator');
-  var roleIndicatorText = document.getElementById('roleIndicatorText');
 
   function updateRoleUI(role) {
     state.role = role;
     roleGroup.querySelectorAll('.mode-pill').forEach(function(b) { b.classList.remove('active'); });
     roleGroup.querySelector('[data-role="' + role + '"]').classList.add('active');
-    roleIndicator.className = 'role-indicator visible ' + role;
-    if (role === 'admin') {
-      roleIndicatorText.textContent = '管理端模式 — 可进行数据读写操作';
-    } else {
-      roleIndicatorText.textContent = '员工端模式 — 仅可查询数据，无法进行增删改操作';
-    }
   }
 
   roleGroup.addEventListener('click', function(e) {
@@ -1146,8 +1132,8 @@
 
   function getWelcomeText(mode) {
     return mode === 'analysis'
-      ? '维度分析并生成可视化图表'
-      : '极速响应日常查询';
+      ? '基于 Superstore Sales 数据集（9,994 条美国零售交易）的深度分析'
+      : '查询 Superstore 销售数据';
   }
 
   function showWelcome() {

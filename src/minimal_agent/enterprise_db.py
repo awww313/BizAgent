@@ -18,7 +18,8 @@ DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 os.makedirs(DATA_DIR, exist_ok=True)
 
 DB_PATH = DATA_DIR / "enterprise.db"
-SCHEMA_VERSION = 4  # v4: 员工 status 改为 INTEGER（1在职/0已离职）
+SCHEMA_VERSION = 5  # v4: 员工 status 改为 INTEGER（1在职/0已离职）
+                    # v5: 新增 superstore_orders 表
 
 
 
@@ -101,6 +102,35 @@ class EnterpriseDB:
             CREATE INDEX IF NOT EXISTS idx_employees_dept ON employees(department);
             CREATE INDEX IF NOT EXISTS idx_customers_tier ON customers(tier);
             CREATE INDEX IF NOT EXISTS idx_customers_region ON customers(region);
+
+            CREATE TABLE IF NOT EXISTS superstore_orders (
+                row_id INTEGER PRIMARY KEY,
+                order_id TEXT NOT NULL,
+                order_date TEXT NOT NULL,
+                ship_date TEXT NOT NULL,
+                ship_mode TEXT NOT NULL,
+                customer_id TEXT NOT NULL,
+                customer_name TEXT NOT NULL,
+                segment TEXT NOT NULL,
+                country TEXT NOT NULL,
+                city TEXT NOT NULL,
+                state TEXT NOT NULL,
+                postal_code TEXT,
+                region TEXT NOT NULL,
+                product_id TEXT NOT NULL,
+                category TEXT NOT NULL,
+                sub_category TEXT NOT NULL,
+                product_name TEXT NOT NULL,
+                sales REAL NOT NULL,
+                quantity INTEGER NOT NULL,
+                discount REAL NOT NULL,
+                profit REAL NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_ss_category ON superstore_orders(category);
+            CREATE INDEX IF NOT EXISTS idx_ss_region ON superstore_orders(region);
+            CREATE INDEX IF NOT EXISTS idx_ss_segment ON superstore_orders(segment);
+            CREATE INDEX IF NOT EXISTS idx_ss_order_date ON superstore_orders(order_date);
         """)
 
     def _init_db(self):
@@ -595,6 +625,258 @@ class EnterpriseDB:
         except sqlite3.Error as e:
             logger.error("[EnterpriseDB] 客户消费更新失败: %s", e)
             return False
+        finally:
+            conn.close()
+
+    # ==========================================================
+    # Superstore 数据 — 只读查询
+    # ==========================================================
+
+    def get_superstore_stats(self) -> dict:
+        """返回 Superstore 数据集的概览统计"""
+        conn = self._get_conn()
+        try:
+            total = conn.execute("SELECT COUNT(*) FROM superstore_orders").fetchone()[0]
+            if total == 0:
+                return {"total_orders": 0, "note": "Superstore 数据未加载，请先执行 seed_superstore()"}
+            date_range = conn.execute(
+                "SELECT MIN(order_date), MAX(order_date) FROM superstore_orders"
+            ).fetchone()
+            categories = [r[0] for r in conn.execute(
+                "SELECT DISTINCT category FROM superstore_orders ORDER BY category"
+            ).fetchall()]
+            regions = [r[0] for r in conn.execute(
+                "SELECT DISTINCT region FROM superstore_orders ORDER BY region"
+            ).fetchall()]
+            return {
+                "total_orders": total,
+                "date_range": f"{date_range[0]} ~ {date_range[1]}" if date_range[0] else "",
+                "categories": categories,
+                "regions": regions,
+            }
+        finally:
+            conn.close()
+
+    def query_superstore_by_category(self) -> list[dict]:
+        """按产品类别汇总销售额和利润"""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute("""
+                SELECT category,
+                       ROUND(SUM(sales), 2) AS total_sales,
+                       ROUND(SUM(profit), 2) AS total_profit,
+                       ROUND(AVG(profit / NULLIF(sales, 0)) * 100, 2) AS avg_margin_pct,
+                       SUM(quantity) AS total_quantity,
+                       COUNT(*) AS order_count
+                FROM superstore_orders
+                GROUP BY category
+                ORDER BY total_sales DESC
+            """).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def query_superstore_subcategory(self, category: str = None) -> list[dict]:
+        """按子类别汇总，可选只返回指定大类"""
+        conn = self._get_conn()
+        try:
+            if category:
+                rows = conn.execute("""
+                    SELECT category, sub_category,
+                           ROUND(SUM(sales), 2) AS total_sales,
+                           ROUND(SUM(profit), 2) AS total_profit,
+                           ROUND(AVG(profit / NULLIF(sales, 0)) * 100, 2) AS avg_margin_pct,
+                           SUM(quantity) AS total_quantity
+                    FROM superstore_orders
+                    WHERE category = ?
+                    GROUP BY sub_category
+                    ORDER BY total_sales DESC
+                """, [category]).fetchall()
+            else:
+                rows = conn.execute("""
+                    SELECT category, sub_category,
+                           ROUND(SUM(sales), 2) AS total_sales,
+                           ROUND(SUM(profit), 2) AS total_profit,
+                           ROUND(AVG(profit / NULLIF(sales, 0)) * 100, 2) AS avg_margin_pct,
+                           SUM(quantity) AS total_quantity
+                    FROM superstore_orders
+                    GROUP BY sub_category
+                    ORDER BY total_sales DESC
+                """).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def query_superstore_by_region(self) -> list[dict]:
+        """按地区汇总销售额和利润"""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute("""
+                SELECT region,
+                       ROUND(SUM(sales), 2) AS total_sales,
+                       ROUND(SUM(profit), 2) AS total_profit,
+                       ROUND(AVG(profit / NULLIF(sales, 0)) * 100, 2) AS avg_margin_pct,
+                       SUM(quantity) AS total_quantity,
+                       COUNT(DISTINCT customer_id) AS customer_count
+                FROM superstore_orders
+                GROUP BY region
+                ORDER BY total_sales DESC
+            """).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def query_superstore_by_segment(self) -> list[dict]:
+        """按客户细分汇总"""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute("""
+                SELECT segment,
+                       ROUND(SUM(sales), 2) AS total_sales,
+                       ROUND(SUM(profit), 2) AS total_profit,
+                       ROUND(AVG(profit / NULLIF(sales, 0)) * 100, 2) AS avg_margin_pct,
+                       COUNT(DISTINCT customer_id) AS customer_count,
+                       COUNT(*) AS order_count
+                FROM superstore_orders
+                GROUP BY segment
+                ORDER BY total_sales DESC
+            """).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def query_superstore_monthly_trend(self) -> list[dict]:
+        """按月汇总销售趋势"""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute("""
+                SELECT SUBSTR(order_date, 1, 7) AS month,
+                       ROUND(SUM(sales), 2) AS total_sales,
+                       ROUND(SUM(profit), 2) AS total_profit,
+                       SUM(quantity) AS total_quantity,
+                       COUNT(*) AS order_count
+                FROM superstore_orders
+                GROUP BY month
+                ORDER BY month
+            """).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def query_superstore_top_products(self, n: int = 10) -> list[dict]:
+        """销售额 Top N 产品"""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute("""
+                SELECT product_name, category, sub_category,
+                       ROUND(SUM(sales), 2) AS total_sales,
+                       ROUND(SUM(profit), 2) AS total_profit,
+                       SUM(quantity) AS total_quantity
+                FROM superstore_orders
+                GROUP BY product_name
+                ORDER BY total_sales DESC
+                LIMIT ?
+            """, [n]).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def query_superstore_by_state(self) -> list[dict]:
+        """按州汇总地理分布"""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute("""
+                SELECT state, region,
+                       ROUND(SUM(sales), 2) AS total_sales,
+                       ROUND(SUM(profit), 2) AS total_profit,
+                       ROUND(AVG(profit / NULLIF(sales, 0)) * 100, 2) AS avg_margin_pct,
+                       SUM(quantity) AS total_quantity
+                FROM superstore_orders
+                GROUP BY state
+                ORDER BY total_sales DESC
+            """).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def query_superstore_profitability(self) -> dict:
+        """整体盈利能力分析"""
+        conn = self._get_conn()
+        try:
+            row = conn.execute("""
+                SELECT ROUND(SUM(sales), 2) AS total_sales,
+                       ROUND(SUM(profit), 2) AS total_profit,
+                       ROUND(AVG(profit / NULLIF(sales, 0)) * 100, 2) AS avg_margin_pct,
+                       SUM(quantity) AS total_quantity,
+                       ROUND(AVG(discount), 4) AS avg_discount,
+                       COUNT(*) AS total_orders,
+                       COUNT(DISTINCT customer_id) AS unique_customers
+                FROM superstore_orders
+            """).fetchone()
+            return dict(row) if row else {}
+        finally:
+            conn.close()
+
+    def query_superstore_loss_products(self, n: int = 10) -> list[dict]:
+        """亏损最多的 Top N 产品"""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute("""
+                SELECT product_name, category, sub_category,
+                       ROUND(SUM(profit), 2) AS total_profit,
+                       ROUND(SUM(sales), 2) AS total_sales,
+                       SUM(quantity) AS total_quantity
+                FROM superstore_orders
+                GROUP BY product_name
+                HAVING total_profit < 0
+                ORDER BY total_profit ASC
+                LIMIT ?
+            """, [n]).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def query_superstore_ship_mode(self) -> list[dict]:
+        """按配送方式汇总"""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute("""
+                SELECT ship_mode,
+                       COUNT(*) AS order_count,
+                       ROUND(SUM(sales), 2) AS total_sales,
+                       ROUND(SUM(profit), 2) AS total_profit
+                FROM superstore_orders
+                GROUP BY ship_mode
+                ORDER BY total_sales DESC
+            """).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def query_superstore_by_year(self) -> list[dict]:
+        """按年度汇总"""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute("""
+                SELECT SUBSTR(order_date, 1, 4) AS year,
+                       ROUND(SUM(sales), 2) AS total_sales,
+                       ROUND(SUM(profit), 2) AS total_profit,
+                       SUM(quantity) AS total_quantity,
+                       COUNT(*) AS order_count
+                FROM superstore_orders
+                GROUP BY year
+                ORDER BY year
+            """).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def is_superstore_loaded(self) -> bool:
+        """检查 Superstore 数据是否已加载"""
+        conn = self._get_conn()
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM superstore_orders").fetchone()[0]
+            return count > 0
         finally:
             conn.close()
 

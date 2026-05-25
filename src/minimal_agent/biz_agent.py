@@ -29,6 +29,9 @@ from .analysis_ops import auto_analyze, financial_mom, financial_summary, sales_
 from .visualizer import auto_chart, line_chart, bar_chart, pie_chart, clean_old_charts
 from .reflection import ReflectionPipeline, ConfidenceLevel, get_confidence_level
 from .response_builder import build_clarifying_response, attach_confidence_warning
+from .superstore_api import SUPERSTORE_TOOL_DEFINITIONS, SUPERSTORE_FUNCTION_MAP
+from .superstore_analysis import auto_analyze_superstore
+from .superstore_loader import seed_superstore
 from .exceptions import (
     AgentError,
     ModelCallError,
@@ -126,19 +129,27 @@ class BizAgent:
         enable_tracking: bool = True,
         enable_persistence: bool = False,
         role: str = "admin",
+        data_source: str = "superstore",
     ):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.task_type = task_type
         self.max_retries = max_retries
-        self.all_tools = tools or TOOL_DEFINITIONS
+        self.data_source = data_source
+        self.all_tools = self._resolve_tools(tools or TOOL_DEFINITIONS)
         self.session_id = session_id
         self._enable_tracking = enable_tracking
         self._enable_persistence = enable_persistence
         self._tracker: Optional[TaskTracker] = None
         self._intent_engine = IntentEngine()
         self.role = role
+
+    def _resolve_tools(self, default_tools: list) -> list:
+        """根据 data_source 选择工具集"""
+        if self.data_source == "superstore":
+            return SUPERSTORE_TOOL_DEFINITIONS
+        return default_tools
 
     def _get_tools_for_role(self) -> list:
         """根据当前角色返回可用的工具列表。员工端仅暴露读操作工具。"""
@@ -452,7 +463,7 @@ class BizAgent:
                 "data": {"note": "您暂无该权限。员工端仅支持数据查询，如需增删改请切换至管理端。"},
             }, ensure_ascii=False)
 
-        func = FUNCTION_MAP.get(func_name)
+        func = FUNCTION_MAP.get(func_name) or SUPERSTORE_FUNCTION_MAP.get(func_name)
         if not func:
             return json.dumps({"error": f"未知工具: {func_name}"}, ensure_ascii=False)
 
@@ -589,15 +600,29 @@ class BizAgent:
 
         # 懒初始化 ContextManager
         if not hasattr(self, "_quick_ctx") or self._quick_ctx is None:
-            quick_system = (
-                "你是「智友」，一个专业的商务智能助手。\n\n"
-                "## 规则\n"
-                "1. 用纯中文自然语言回答，语言简洁清晰。\n"
-                "2. 你可以调用企业数据接口查询库存、财务、销售、员工等信息。\n"
-                "3. 根据查询到的真实数据回答用户问题，数据如有不确定，明确说明。\n"
-                "4. 不要使用表情符号。\n"
-                "5. 回答应简短直接，适合快速阅读。"
-            )
+            if self.data_source == "superstore":
+                quick_system = (
+                    "你是「智友」，一个专业的商务智能助手。\n\n"
+                    "当前数据源为 Superstore Sales 数据集（美国零售超市 2014-2017 年交易数据），\n"
+                    "涵盖 Furniture / Office Supplies / Technology 三大品类，\n"
+                    "East / West / Central / South 四个区域，Consumer / Corporate / Home Office 三类客户群。\n\n"
+                    "## 规则\n"
+                    "1. 用纯中文自然语言回答，语言简洁清晰。\n"
+                    "2. 你可以调用数据接口查询各类别、区域、客户群的销售额、利润、销量等数据。\n"
+                    "3. 根据查询到的真实数据回答用户问题，数据如有不确定，明确说明。\n"
+                    "4. 不要使用表情符号。\n"
+                    "5. 回答应简短直接，适合快速阅读。"
+                )
+            else:
+                quick_system = (
+                    "你是「智友」，一个专业的商务智能助手。\n\n"
+                    "## 规则\n"
+                    "1. 用纯中文自然语言回答，语言简洁清晰。\n"
+                    "2. 你可以调用企业数据接口查询库存、财务、销售、员工等信息。\n"
+                    "3. 根据查询到的真实数据回答用户问题，数据如有不确定，明确说明。\n"
+                    "4. 不要使用表情符号。\n"
+                    "5. 回答应简短直接，适合快速阅读。"
+                )
             self._quick_ctx = ContextManager(
                 strategy="summary",
                 api_key=self.api_key,
@@ -1032,482 +1057,304 @@ class BizAgent:
         self._ensure_session()
         logger.info("[AnalysisMode] 输入: %s", user_input[:80])
 
+        return self._chat_with_superstore_analysis(
+            user_input, generate_chart=generate_chart
+        )
+
+    # ============================================================
+    # Superstore 专用分析管线
+    # ============================================================
+
+    def _chat_with_superstore_analysis(self, user_input: str, generate_chart: bool = True) -> dict:
+        """
+        Superstore 数据分析管线：关键词匹配 → 数据获取 → 统计分析 → 图表 → LLM 输出。
+
+        与 mock 模式不同的地方：
+          - 意图识别使用简单关键词规则（不需要 intent_engine 的复杂分类）
+          - API 调用走 SUPERSTORE_FUNCTION_MAP
+          - 分析算子走 superstore_analysis.auto_analyze_superstore
+        """
         tracker = self._get_tracker() if self._enable_tracking else None
         task_id = None
         if tracker:
-            task_id = tracker.start_task(user_input[:200], mode="analysis")
+            task_id = tracker.start_task(user_input[:200], mode="superstore_analysis")
 
+        # 确保数据已加载
+        if tracker:
+            tracker.start_step("seed_data", "检查/加载 Superstore 数据")
         try:
-            # ---- Step 1: 意图分析 ----
-            if tracker:
-                tracker.start_step("intent_analysis", "意图分类")
+            from .enterprise_db import db as entdb
+            if not entdb.is_superstore_loaded():
+                seed_superstore(entdb)
+        except Exception as e:
+            logger.warning("[Superstore] 数据加载失败: %s", e)
+        if tracker:
+            tracker.end_step("success", "数据就绪")
 
-            result = self._intent_engine.process(user_input)
+        # ---- Step 1: 关键词匹配 → 决定需要调用哪些 API ----
+        if tracker:
+            tracker.start_step("intent", "关键词匹配")
+        text = user_input.lower()
+        api_tasks = self._match_superstore_intent(text)
+        if tracker:
+            tracker.end_step("success", f"匹配到 {len(api_tasks)} 个 API: {[t['api'] for t in api_tasks]}")
 
-            if tracker:
-                tracker.end_step("success", f"意图={result.intent}, 置信度={result.confidence:.0%}")
-
-            # ---- L1: 意图置信度检查 ----
-            l1 = ReflectionPipeline.run_layer1(
-                result.intent, result.confidence, result.params, result.template
-            )
-            if tracker:
-                tracker.start_step("reflection_l1", f"L1 score={l1.score:.2f}, passed={l1.passed}")
-
-            if not l1.passed:
-                logger.info("[AnalysisMode] L1 未通过 (score=%.2f, intent=%s), 返回澄清", l1.score, result.intent)
-                clarifying = build_clarifying_response(result.intent, result.confidence)
-                clarifying["analysis"] = {}
-                clarifying["charts"] = []
-                if tracker and task_id:
-                    tracker.end_step("failed", f"L1 未通过，返回澄清")
-                    tracker.end_task("success", "L1 返回澄清响应")
-                return clarifying
-
-            if tracker:
-                tracker.end_step("success", f"L1 通过, score={l1.score:.2f}")
-
-            # ---- Step 2: 执行 API 调用 ----
-            api_results = {}
-            for task in (result.api_tasks or []):
-                api_name = task["api"]
-                args = task.get("args", {})
-                func = FUNCTION_MAP.get(api_name)
-                if func:
-                    ok, missing = _has_required_args(func, args)
-                    if not ok:
-                        logger.warning("[AnalysisMode] API %s 缺少参数 %s，跳过", api_name, missing)
-                        api_results[api_name] = {"note": f"查询条件不足（缺少{'、'.join(missing)}），已使用全部可用数据"}
-                        if tracker:
-                            tracker.start_step("tool_call", f"{api_name} -> 跳过（缺 {missing}）")
-                            tracker.end_step("failed", f"缺少参数: {missing}")
-                        continue
-                    try:
-                        if not self._check_write_permission(api_name):
-                            api_results[api_name] = {"status": "error", "error": "您暂无该权限。员工端仅支持数据查询，如需增删改请切换至管理端。"}
-                            if tracker:
-                                tracker.start_step("tool_call", f"{api_name} -> 权限不足")
-                                tracker.end_step("failed", "员工端无写权限")
-                            continue
-
-                        if tracker:
-                            tracker.start_step("tool_call", f"{api_name}({args})")
-                        api_data = func(**args)
-                        api_results[api_name] = api_data
-                        if tracker:
-                            tracker.end_step("success", str(api_data)[:200])
-                    except Exception as e:
-                        logger.warning("[AnalysisMode] API %s 失败: %s", api_name, e)
-                        api_results[api_name] = {"error": str(e)}
-                        if tracker:
-                            tracker.end_step("failed", str(e)[:200])
-
-            # ---- L2: API 数据充分性检查 ----
-            l2 = ReflectionPipeline.run_layer2(api_results)
-            if tracker:
-                tracker.start_step("reflection_l2", f"L2 score={l2.score:.2f}, passed={l2.passed}")
-                tracker.end_step("success", f"数据充分性: {l2.metadata.get('api_sufficiency', {})}")
-
-            # 构建数据完整性提示（注入给 LLM）
-            sufficiency_injection = ""
-            if not l2.passed:
-                sufficiency_lines = ["\n\n【数据完整性提示】\n以下 API 返回数据可能不完整："]
-                for issue in l2.issues:
-                    sufficiency_lines.append(f"- {issue}")
-                sufficiency_lines.append("\n请在分析时注意数据局限性，不要编造缺失的数据。")
-                sufficiency_injection = "\n".join(sufficiency_lines)
-
-            # 剥离内部元数据字段（_sufficiency / _note），不暴露给 LLM
-            for api_name in list(api_results.keys()):
-                if isinstance(api_results[api_name], dict):
-                    api_results[api_name] = {
-                        k: v for k, v in api_results[api_name].items()
-                        if not k.startswith("_")
-                    }
-
-            # ---- Step 3: 统计分析 ----
-            if tracker:
-                tracker.start_step("analysis", "执行统计计算")
-
-            clean_old_charts()
-            time_filter = result.params.get("time")
-            all_analysis = auto_analyze(api_results, time_filter=time_filter)
-            # 按意图过滤分析结果，只保留相关类型
-            analysis_results = _filter_analysis_by_intent(all_analysis, result.intent)
-            logger.info("[AnalysisMode] 意图=%s, 分析类型=%s", result.intent, list(analysis_results.keys()))
-
-            if tracker:
-                analysis_summary = {k: str(v)[:80] for k, v in analysis_results.items()}
-                tracker.end_step("success", f"分析完成: {list(analysis_results.keys())}")
-
-            # ---- Step 4: 智能可视化（按意图选择图表类型） ----
-            charts = []
-            chart_error_hint = None
-            if generate_chart and analysis_results:
+        # ---- Step 2: 执行 API ----
+        if tracker:
+            tracker.start_step("api_calls", "执行 API 查询")
+        api_results = {}
+        for task in api_tasks:
+            api_name = task["api"]
+            args = task.get("args", {})
+            func = SUPERSTORE_FUNCTION_MAP.get(api_name)
+            if func:
                 if tracker:
-                    tracker.start_step("visualization", "生成图表")
-
+                    tracker.start_step("tool_call", f"{api_name}({args})")
                 try:
-                    intent = result.intent
-                    params = result.params
-                    is_trend_query = any(kw in user_input for kw in ["趋势", "走势", "趋势图", "变化", "增长", "下降", "波动"])
-
-                    # 时间标签美化
-                    time_label = params.get("time", "")
-                    time_display = {"all": "全年", "latest": "最近"}.get(time_label, time_label)
-
-                    if intent == "库存查询":
-                        inv = analysis_results.get("inventory_analysis", {})
-                        if inv and inv.get("warehouse_distribution"):
-                            labels_wh = list(inv["warehouse_distribution"].keys())
-                            values_wh = list(inv["warehouse_distribution"].values())
-                            pc = pie_chart(labels_wh, values_wh, title="库存仓库分布")
-                            if "error" not in pc:
-                                charts.append(pc)
-                    elif intent in ("财务报告", "数据分析"):
-                        mom = analysis_results.get("financial_mom", [])
-                        if mom and len(mom) >= 2:
-                            months = [item["period"] for item in mom]
-                            values = [item["current_value"] for item in mom]
-                            label = f"财务环比趋势"
-                            if time_display:
-                                label += f"（{time_display}）"
-                            lc = line_chart(months, [{"label": "指标值", "values": values}], title=label)
-                            if "error" not in lc:
-                                charts.append(lc)
-                    elif intent in ("销售分析", "对比分析"):
-                        # 趋势类查询 → 月度趋势折线图
-                        if is_trend_query or not analysis_results.get("sales_comparison"):
-                            trend = analysis_results.get("sales_trend", [])
-                            if trend:
-                                months = [item["month"] for item in trend]
-                                values = [item["sales"] for item in trend]
-                                title = "月度销售趋势"
-                                if time_display:
-                                    title += f"（{time_display}）"
-                                lc = line_chart(months, [{"label": "总销量", "values": values}],
-                                                title=title, y_label="销量（件）")
-                                if "error" not in lc:
-                                    charts.append(lc)
-                        # 默认 → 产品对比柱状图
-                        if not charts:
-                            comparison = analysis_results.get("sales_comparison", [])
-                            if comparison:
-                                labels = [c["product"] for c in comparison]
-                                values = [c["total_sales"] for c in comparison]
-                                title = "产品销量对比"
-                                if time_display:
-                                    title += f"（{time_display}）"
-                                bc = bar_chart(labels, values, title=title, y_label="销量（件）")
-                                if "error" not in bc:
-                                    charts.append(bc)
-                    elif intent in ("综合简报",):
-                        # 综合简报：尝试生成 财务汇总柱状图
-                        summary = analysis_results.get("financial_summary", {})
-                        if summary and summary.get("months_analyzed", 0) > 0:
-                            labels_list = ["总营收", "总成本", "总利润"]
-                            values_list = [
-                                summary.get("total_revenue", 0),
-                                summary.get("total_cost", 0),
-                                summary.get("total_profit", 0),
-                            ]
-                            if any(v != 0 for v in values_list):
-                                bc = bar_chart(labels_list, values_list, title="财务汇总", y_label="金额（元）")
-                                if "error" not in bc:
-                                    charts.append(bc)
-
-                    # 如果主要图表未生成，尝试 auto_chart 兜底
-                    if not charts:
-                        chart_result = auto_chart(analysis_results, data_source=intent)
-                        if "error" not in chart_result:
-                            charts.append(chart_result)
-                            logger.info("[AnalysisMode] 兜底图表已生成: %s", chart_result["chart_url"])
-                        else:
-                            chart_error_hint = chart_result["error"]
-                            logger.info("[AnalysisMode] auto_chart 未命中: %s", chart_error_hint)
-
-                    # 二次兜底：尝试其他数据
-                    if not charts:
-                        comparison = analysis_results.get("sales_comparison", [])
-                        if comparison:
-                            labels = [c["product"] for c in comparison]
-                            values = [c["total_sales"] for c in comparison]
-                            bc = bar_chart(labels, values, title="产品销量对比", y_label="销量（件）")
-                            if "error" not in bc:
-                                charts.append(bc)
-
-                        inv = analysis_results.get("inventory_analysis", {})
-                        if inv and inv.get("warehouse_distribution"):
-                            labels_wh = list(inv["warehouse_distribution"].keys())
-                            values_wh = list(inv["warehouse_distribution"].values())
-                            pc = pie_chart(labels_wh, values_wh, title="库存仓库分布")
-                            if "error" not in pc:
-                                charts.append(pc)
-
-                    if not charts and not chart_error_hint:
-                        chart_error_hint = "暂无可视化的数据维度"
-
+                    api_results[api_name] = func(**args)
+                    if tracker:
+                        tracker.end_step("success", str(api_results[api_name])[:200])
                 except Exception as e:
-                    logger.warning("[AnalysisMode] 图表生成异常，已降级为纯文本: %s", e)
-                    chart_error_hint = "图表生成时遇到技术问题，已自动降级为纯文本分析。"
+                    logger.warning("[Superstore] API %s 失败: %s", api_name, e)
+                    api_results[api_name] = {"status": "error", "error": str(e)}
+                    if tracker:
+                        tracker.end_step("failed", str(e)[:200])
+        if tracker:
+            tracker.end_step("success", f"获得 {len(api_results)} 个 API 结果")
 
-                if tracker:
-                    tracker.end_step("success", f"生成了 {len(charts)} 个图表")
+        # 清理内部字段
+        for api_name in list(api_results.keys()):
+            if isinstance(api_results[api_name], dict):
+                api_results[api_name] = {
+                    k: v for k, v in api_results[api_name].items()
+                    if not k.startswith("_")
+                }
 
-            # ---- Step 5: 构建增强提示并调模型 ----
+        # ---- Step 3: 分析 ----
+        if tracker:
+            tracker.start_step("analysis", "统计分析")
+        analysis_results = auto_analyze_superstore(api_results)
+        if tracker:
+            tracker.end_step("success", f"分析项: {list(analysis_results.keys())}")
+
+        # ---- Step 4: 图表 ----
+        charts = []
+        if generate_chart and analysis_results:
             if tracker:
-                tracker.start_step("build_prompt", "构建分析增强提示")
-
-            enhanced_messages = self._build_analysis_messages(
-                result, api_results, analysis_results, charts,
-                chart_degraded=bool(chart_error_hint),
-                chart_error_hint=chart_error_hint,
-                sufficiency_injection=sufficiency_injection,
-            )
-
+                tracker.start_step("charts", "生成图表")
+            charts = self._generate_superstore_charts(api_results, analysis_results, user_input)
             if tracker:
-                tracker.end_step("success", f"消息数={len(enhanced_messages)}")
+                tracker.end_step("success", f"生成 {len(charts)} 张图表")
 
-            # ---- Step 6: 模型生成结构化输出 ----
-            if tracker:
-                tracker.start_step("api_call", f"模型生成 (intent={result.intent})")
+        # ---- Step 5: 构建 prompt 调用模型 ----
+        if tracker:
+            tracker.start_step("build_prompt", "构建增强提示")
 
-            raw_resp = self._call_api(enhanced_messages, use_json_mode=False)
-            raw_content = raw_resp["choices"][0]["message"]["content"]
+        system_hint = (
+            "你是「智友」，一个专业的商务智能助手。\n\n"
+            "当前数据源为 Superstore Sales 数据集（美国零售超市 2014-2017 年交易数据），\n"
+            "主要维度包括：产品（Furniture / Office Supplies / Technology）、\n"
+            "区域（East / West / Central / South）、客户群（Consumer / Corporate / Home Office）、\n"
+            "以及州、城市、运输方式等细分。\n\n"
+            "## 规则\n"
+            "1. 用纯中文自然语言回答。\n"
+            "2. 基于提供的 API 数据分析并回答，严禁编造数据。\n"
+            "3. 回答应专业简洁，突出重点数据和结论。\n"
+            "4. 输出格式为 JSON：{\"status\": \"success\", \"data\": {\"answer\": \"...\", \"details\": {...}}}"
+        )
 
+        api_context = []
+        for name, result in api_results.items():
+            api_context.append(f"[{name}]\n{json.dumps(result, ensure_ascii=False)[:3000]}")
+
+        analysis_context = []
+        for name, result in analysis_results.items():
+            analysis_context.append(f"[{name}]\n{json.dumps(result, ensure_ascii=False)[:2000]}")
+
+        user_prompt = f"""请根据以下数据回答用户问题。
+
+用户问题：{user_input}
+
+API 查询结果：
+{chr(10).join(api_context) if api_context else "（无 API 数据）"}
+
+统计分析结果：
+{chr(10).join(analysis_context) if analysis_context else "（无分析数据）"}
+
+请给出包含具体数据的分析报告。"""
+
+        messages = [
+            {"role": "system", "content": system_hint},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        if tracker:
+            tracker.end_step("success", "提示构建完成")
+
+        # ---- Step 6: 模型调用 ----
+        if tracker:
+            tracker.start_step("api_call", "模型生成")
+        try:
+            resp = self._call_api(messages, use_json_mode=False)
+            raw_content = resp["choices"][0]["message"]["content"]
             if tracker:
                 tracker.end_step("success", "模型响应成功")
-
-            # ---- L3: 事实验证 ----
-            try:
-                parsed_for_l3 = json.loads(raw_content) if isinstance(raw_content, str) else raw_content
-            except json.JSONDecodeError:
-                parsed_for_l3 = {"answer": raw_content}
-            l3 = ReflectionPipeline.run_layer3(parsed_for_l3, api_results)
-
-            if not l3.passed:
-                logger.info("[AnalysisMode] L3 检测到事实不匹配，尝试修正重试")
-                if tracker:
-                    tracker.start_step("reflection_l3", f"L3 score={l3.score:.2f}, mismatches={len(l3.metadata.get('mismatches', []))}")
-
-                correction_prompt = self._build_correction_prompt(l3.issues)
-                retry_messages = enhanced_messages + [
-                    {"role": "assistant", "content": raw_content},
-                    {"role": "user", "content": correction_prompt},
-                ]
-                try:
-                    raw_resp2 = self._call_api(retry_messages, use_json_mode=False)
-                    raw_content2 = raw_resp2["choices"][0]["message"]["content"]
-                    # 重新检查修正后的内容
-                    try:
-                        parsed_for_l3 = json.loads(raw_content2)
-                    except json.JSONDecodeError:
-                        parsed_for_l3 = {"answer": raw_content2}
-                    l3_retry = ReflectionPipeline.run_layer3(parsed_for_l3, api_results)
-                    if l3_retry.passed:
-                        raw_content = raw_content2
-                        l3 = l3_retry
-                        if tracker:
-                            tracker.end_step("success", "L3 修正成功")
-                    else:
-                        if tracker:
-                            tracker.end_step("failed", f"L3 修正仍不匹配, score={l3_retry.score:.2f}")
-                except Exception as e:
-                    logger.warning("[AnalysisMode] L3 重试失败: %s", e)
-                    if tracker:
-                        tracker.end_step("failed", f"重试异常: {e}")
-
-            # ---- Step 7: 解析 ----
-            if tracker:
-                tracker.start_step("validate", "JSON 校验")
 
             try:
                 output = self._validate_json(raw_content)
             except (json.JSONDecodeError, ValueError):
-                output = {"status": "success", "data": {"回答": raw_content}}
+                output = {"status": "success", "data": {"answer": raw_content}}
 
-            if tracker:
-                tracker.end_step("success", "JSON 校验通过")
-
-            # ---- L4: 综合行动决策 ----
-            l4 = ReflectionPipeline.run_layer4(l1, l2, l3)
-            overall_confidence = l4.score
-            if tracker:
-                tracker.start_step("reflection_l4", f"L4 overall={overall_confidence:.3f}")
-                tracker.end_step("success", f"综合置信度={overall_confidence:.3f}")
-
-            # 根据整体置信度决定是否降级 status
-            final_status = output.get("status", "success")
-            if overall_confidence < 0.2:
-                final_status = "partial"
-
-            # 附加置信度警告
-            answer_text = output.get("data", {}).get("answer", "") or output.get("data", {}).get("回答", "")
-            if overall_confidence < 0.4 and answer_text:
-                level = get_confidence_level(overall_confidence)
-                answer_text = attach_confidence_warning(answer_text, level)
-                if "data" not in output:
-                    output["data"] = {}
-                output["data"]["answer"] = answer_text
-
-            # 组装最终返回
-            final = {
-                "status": final_status,
-                "data": output.get("data", output),
-                "analysis": analysis_results,
-                "charts": charts,
-                "intent": {
-                    "recognized": True,
-                    "intent": result.intent,
-                    "confidence": result.confidence,
-                    "params": result.params,
-                    "matched_keywords": result.matched_keywords,
-                    "api_calls": list(api_results.keys()),
-                },
-                "reflection": {
-                    "overall_confidence": overall_confidence,
-                    "l1": {"score": l1.score, "passed": l1.passed},
-                    "l2": {"score": l2.score, "passed": l2.passed},
-                    "l3": {"score": l3.score, "passed": l3.passed},
-                },
-            }
-
-            if tracker and task_id:
-                tracker.end_task("success", f"分析完成, {len(charts)} 图表")
-
-            # 持久化到 SQLite（供历史记录展示）
-            self._save_messages_to_store([
-                {"role": "user", "content": user_input},
-                {"role": "assistant", "content": json.dumps(final, ensure_ascii=False)},
-            ], task_id)
-
-            return final
-
-        except (requests.RequestException, KeyError, json.JSONDecodeError, ModelCallError) as e:
+        except Exception as e:
             err_msg = str(e)[:200]
-            logger.error("[AnalysisMode] 失败: %s", err_msg)
-            # AgentError 已自带用户友好消息；其他异常转换为友好提示
-            if not isinstance(e, AgentError):
-                err_msg = "系统处理异常，请稍后重试。"
-            if tracker and task_id:
-                tracker.end_task("failed", err_msg)
-            return {"status": "error", "error": err_msg, "data": None, "analysis": {}, "charts": []}
+            logger.error("[Superstore] 模型调用失败: %s", err_msg)
+            if tracker:
+                tracker.end_step("failed", err_msg)
+            output = {"status": "error", "data": {"answer": "系统处理异常，请稍后重试。"}}
 
-    def _build_analysis_messages(
-        self,
-        result: IntentResult,
-        api_results: dict,
-        analysis_results: dict,
-        charts: list[dict],
-        chart_degraded: bool = False,
-        chart_error_hint: Optional[str] = None,
-        sufficiency_injection: str = "",
-    ) -> list:
-        """构建分析模式的增强消息"""
-        data_context = self._build_data_context()
-        intent_prompt = self._intent_engine.build_enhanced_prompt(result)
+        # ---- 结果组装 ----
+        final = {
+            "status": output.get("status", "success"),
+            "data": output.get("data", output),
+            "analysis": analysis_results,
+            "charts": charts,
+            "intent": {
+                "recognized": True,
+                "intent": "superstore_analysis",
+                "api_calls": list(api_results.keys()),
+            },
+        }
 
-        # API 结果（按意图过滤），剥离内部元数据字段
-        filtered_apis = _filter_api_by_intent(api_results, result.intent)
-        clean_apis = {}
-        for api_name, data in filtered_apis.items():
-            if isinstance(data, dict):
-                clean_apis[api_name] = {k: v for k, v in data.items() if not k.startswith("_")}
-            else:
-                clean_apis[api_name] = data
-        api_section = ""
-        if clean_apis:
-            api_section = "\n\n【API 返回数据】\n"
-            for api_name, data in clean_apis.items():
-                api_section += f"\n--- {api_name} ---\n"
-                api_section += json.dumps(data, ensure_ascii=False, indent=2)
+        if tracker and task_id:
+            tracker.end_task("success", f"Superstore 分析完成，{len(charts)} 张图表")
 
-        # 统计分析结果
-        analysis_section = ""
-        if analysis_results:
-            analysis_section = "\n\n【统计分析结果】\n"
-            for name, data in analysis_results.items():
-                analysis_section += f"\n--- {name} ---\n"
-                analysis_section += json.dumps(data, ensure_ascii=False, indent=2, default=str)
+        self._save_messages_to_store([
+            {"role": "user", "content": user_input},
+            {"role": "assistant", "content": json.dumps(final, ensure_ascii=False)},
+        ], task_id)
 
-        # 图表信息
-        chart_section = ""
-        if charts:
-            chart_section = "\n\n【已生成图表】\n"
-            for c in charts:
-                chart_section += f"- {c.get('title', '')} ({c.get('chart_type', '')}): {c.get('chart_url', '')}\n"
-        elif chart_degraded:
-            chart_section = f"\n\n【图表提示】\n{chart_error_hint or '图表生成不可用，请以纯文本形式输出分析报告。'}\n"
+        return final
 
-        # 分析指导
-        analysis_guide = (
-            "\n\n## 分析报告要求\n"
-            "你正在以增强分析模式工作。请生成一份完整的自然语言分析报告：\n"
-            "1. 基于【API 返回数据】和【统计分析结果】生成报告\n"
-            "2. 引用具体数据（如环比增长率、占比、极值等），将数据融入叙述中\n"
-            "3. 报告的 answer 字段必须是纯自然语言文本，分段落撰写，语言流畅专业\n"
-            "4. 禁止在 answer 中使用 Markdown 标记（**、*、# 等），不要包含技术性描述、置信度或 API 调用信息\n"
-            "5. 如果生成了图表，只需简要提及（如「详见下图」），不要输出图片链接或 Markdown 图片标记\n"
-            "6. 结构化数据（表格、指标汇总等）放在 details 字段中作为补充\n"
-            "7. 优先输出清晰的分析结论和关键数据要点，确保回答流畅专业、无冗余信息\n"
-            "\n"
-            "【统一输出格式 — 必须严格遵守】\n"
-            "无论业务类别是什么，始终输出以下 JSON 结构：\n"
-            "{\n"
-            "  \"answer\": \"这里写完整的自然语言分析报告，分段落、引用具体数据\",\n"
-            "  \"details\": {\n"
-            "    \"业务类别\": \"识别到的业务类型\",\n"
-            "    \"关键指标\": { ... 模板定义的字段全部放在这里 ... },\n"
-            "    \"原始数据\": { ... 其他结构化数据 ... }\n"
-            "  }\n"
-            "}\n"
-            "answer 字段必须存在且有内容，不得为空。details 中的字段按模板 schema 输出。"
-        )
+    def _match_superstore_intent(self, text: str) -> list[dict]:
+        """
+        通过关键词匹配决定调用哪些 Superstore API。
 
-        full_prompt = (
-            f"{intent_prompt}"
-            f"{api_section}"
-            f"{analysis_section}"
-            f"{chart_section}"
-            f"{analysis_guide}"
-            f"{sufficiency_injection}"
-            f"\n\n【用户输入】\n{result.original_input}"
-        )
-
-        system_content = (
-            BIZ_SYSTEM_PROMPT
-            + data_context
-            + "\n\n## 增强分析模式\n"
-            + "你是一个具备数据分析和可视化能力的商务智能助手。"
-            + "上方已给出意图分析、API 数据、统计分析结果和图表。"
-            + "请基于真实数据用自然语言撰写分析报告，所有数据点融入叙述中，"
-            + "禁止直接输出 JSON 键值对。结构化数据放在 details 字段。"
-            + "\n"
-            + "【重要 — 聚焦用户问题】\n"
-            + f"本次用户的业务类别是【{result.intent}】，请围绕此范围进行分析，\n"
-            + "不要超出用户询问的范围去分析其他业务领域。例如：\n"
-            + "  - 用户查库存 → 只分析库存状况，不写财务或销售报告\n"
-            + "  - 用户查财务 → 只分析财务指标，不写库存或销售报告\n"
-            + "  - 用户查销售 → 只分析销售数据，不写财务或库存报告\n"
-            + "  - 综合简报 → 可以覆盖多个方面\n"
-        )
-
-        return [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": full_prompt},
+        Returns:
+            [{"api": "superstore_by_category", "args": {}}, ...]
+        """
+        intent_map = [
+            (["类", "category", "品类", "类别", "家具", "furniture", "办公", "技术", "产品类别"],
+             [{"api": "superstore_by_category", "args": {}},
+              {"api": "superstore_by_subcategory", "args": {}}]),
+            (["region", "区域", "地区", "东部", "西部", "南部", "中部", "east", "west", "south", "central"],
+             [{"api": "superstore_by_region", "args": {}}]),
+            (["segment", "客户", "consumer", "corporate", "home office", "消费群", "企业"],
+             [{"api": "superstore_by_segment", "args": {}}]),
+            (["趋势", "trend", "月度", "monthly", "每月", "年度", "月份", "增长"],
+             [{"api": "superstore_monthly_trend", "args": {}}]),
+            (["top", "最好", "畅销", "排名", "领先"],
+             [{"api": "superstore_top_products", "args": {"n": 10}}]),
+            (["亏损", "loss", "赔钱", "负利润", "不赚钱"],
+             [{"api": "superstore_loss_products", "args": {"n": 10}}]),
+            (["州", "state", "省份", "地图", "分布"],
+             [{"api": "superstore_by_state", "args": {}}]),
+            (["运输", "ship", "配送", "物流", "快递"],
+             [{"api": "superstore_by_ship_mode", "args": {}}]),
+            (["年度", "year", "每年", "年份", "年"],
+             [{"api": "superstore_by_year", "args": {}}]),
+            (["利润", "profit", "margin", "盈利", "毛利率", "盈利能力", "赚"],
+             [{"api": "superstore_overview", "args": {}},
+              {"api": "superstore_by_category", "args": {}},
+              {"api": "superstore_loss_products", "args": {"n": 5}}]),
+            (["销售额", "销售", "sales", "营收", "overview", "概况", "整体", "总览"],
+             [{"api": "superstore_overview", "args": {}},
+              {"api": "superstore_by_category", "args": {}},
+              {"api": "superstore_by_region", "args": {}}]),
         ]
 
-    @staticmethod
-    def _build_correction_prompt(issues: list[str]) -> str:
-        """构建 L3 修正提示，指导 LLM 根据真实数据修正回答。"""
-        lines = ["我之前的回答中存在以下数据不匹配问题，请修正："]
-        for issue in issues:
-            lines.append(f"- {issue}")
-        lines.append(
-            "\n请基于 API 返回的真实数据重新输出，确保所有数字准确无误。"
-            "严格按照要求的 JSON 格式输出。"
-        )
-        return "\n".join(lines)
+        matched = set()
+        tasks = []
+        for keywords, apis in intent_map:
+            if any(kw in text for kw in keywords):
+                for api_task in apis:
+                    api_name = api_task["api"]
+                    if api_name not in matched:
+                        matched.add(api_name)
+                        tasks.append(api_task)
+
+        # 没有任何匹配 → 同时调用核心 API
+        if not tasks:
+            tasks = [
+                {"api": "superstore_overview", "args": {}},
+                {"api": "superstore_by_category", "args": {}},
+                {"api": "superstore_by_region", "args": {}},
+            ]
+
+        return tasks
+
+    def _generate_superstore_charts(self, api_results: dict, analysis_results: dict, user_input: str) -> list:
+        """根据 Superstore 分析结果为仪表盘/报告生成图表"""
+        from .visualizer import bar_chart, pie_chart, line_chart
+        charts = []
+        text = user_input.lower()
+
+        try:
+            # 分类饼图
+            cat_data = api_results.get("superstore_by_category", {})
+            cats = cat_data.get("data", {}).get("categories", [])
+            if cats and any(kw in text for kw in ["类", "品类", "分布", "category", "pie"]):
+                labels = [c["category"] for c in cats]
+                values = [c["total_sales"] for c in cats]
+                pc = pie_chart(labels, values, title="各品类销售额占比")
+                if "error" not in pc:
+                    charts.append(pc)
+
+            # 区域对比柱状图
+            region_data = api_results.get("superstore_by_region", {})
+            regions = region_data.get("data", {}).get("regions", [])
+            if regions and (any(kw in text for kw in ["区域", "地区", "region"]) or not charts):
+                labels = [r["region"] for r in regions]
+                values = [r["total_sales"] for r in regions]
+                bc = bar_chart(labels, values, title="各区域销售额对比", y_label="销售额 ($)")
+                if "error" not in bc:
+                    charts.append(bc)
+
+            # 月度趋势折线图
+            trend_data = api_results.get("superstore_monthly_trend", {})
+            trends = trend_data.get("data", {}).get("trends", [])
+            if trends and (any(kw in text for kw in ["趋势", "月度", "增长", "trend", "monthly"]) or not charts):
+                months = [t["month"] for t in trends]
+                lc = line_chart(months, [
+                    {"label": "销售额", "values": [t["total_sales"] for t in trends]},
+                    {"label": "利润", "values": [t["total_profit"] for t in trends]},
+                ], title="月度销售趋势", y_label="金额 ($)")
+                if "error" not in lc:
+                    charts.append(lc)
+
+            # Segment 饼图
+            seg_data = api_results.get("superstore_by_segment", {})
+            segs = seg_data.get("data", {}).get("segments", [])
+            if segs and any(kw in text for kw in ["segment", "客户群", "细分"]):
+                labels = [s["segment"] for s in segs]
+                values = [s["total_sales"] for s in segs]
+                pc = pie_chart(labels, values, title="客户群销售额占比")
+                if "error" not in pc:
+                    charts.append(pc)
+
+            # Top 产品柱状图
+            top_data = api_results.get("superstore_top_products", {})
+            products = top_data.get("data", {}).get("top_products", [])
+            if products:
+                labels = [p["product_name"][:12] + "..." if len(p["product_name"]) > 12 else p["product_name"] for p in products[:6]]
+                values = [p["total_sales"] for p in products[:6]]
+                bc = bar_chart(labels, values, title="Top 产品销售额", y_label="销售额 ($)")
+                if "error" not in bc:
+                    charts.append(bc)
+
+        except Exception as e:
+            logger.warning("[Superstore] 图表生成异常: %s", e)
+
+        return charts
 
     def reset_conversation(self):
         """重置对话历史、追踪器和意图引擎状态"""

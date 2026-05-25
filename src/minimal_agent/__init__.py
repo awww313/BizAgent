@@ -50,3 +50,13 @@ from .exceptions import (
     DataNotFoundError,
     retry_with_backoff,
 )
+from .superstore_api import (
+    SUPERSTORE_TOOL_DEFINITIONS, SUPERSTORE_FUNCTION_MAP,
+    superstore_overview, superstore_by_category,
+    superstore_by_region, superstore_by_segment,
+    superstore_monthly_trend, superstore_top_products,
+    superstore_loss_products, superstore_by_state,
+    superstore_by_ship_mode, superstore_by_year,
+)
+from .superstore_analysis import auto_analyze_superstore
+from .superstore_loader import seed_superstore

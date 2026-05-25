@@ -336,6 +336,7 @@ def health_check():
             "task_tracking": True,
             "session_persistence": True,
             "graded_exceptions": True,
+            "superstore_data": True,
         },
         "active_sessions": len(sessions),
     }
