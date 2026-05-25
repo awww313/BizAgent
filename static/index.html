@@ -545,14 +545,15 @@
     position: fixed; bottom: 80px; right: 24px; z-index: 999;
     width: 48px; height: 48px; border-radius: 50%;
     background: linear-gradient(135deg, var(--blue), var(--blue-light));
-    color: #fff; border: none; cursor: pointer;
+    color: #fff; border: none; cursor: grab;
     display: flex; align-items: center; justify-content: center;
     font-size: 18px; font-weight: 700;
     box-shadow: 0 4px 16px rgba(0,82,255,.35);
     transition: var(--transition);
+    touch-action: none;
   }
-  .eval-float-btn:hover { transform: scale(1.08); box-shadow: 0 6px 24px rgba(0,82,255,.45); }
-  .eval-float-btn:active { transform: scale(.95); }
+  .eval-float-btn:hover { cursor: grab; transform: scale(1.08); box-shadow: 0 6px 24px rgba(0,82,255,.45); }
+  .eval-float-btn:active { cursor: grabbing; transform: scale(.95); }
 
   .eval-window {
     position: fixed; right: 24px; bottom: 140px; z-index: 1000;
@@ -1541,54 +1542,127 @@
   // ===== Eval Floating Window =====
   var evalBtn = document.getElementById('evalFloatBtn');
   var evalWin = document.getElementById('evalWindow');
-  var evalHeader = document.getElementById('evalWindowHeader');
   var evalCloseBtn = document.getElementById('evalCloseBtn');
 
-  // Drag
-  var dragState = null;
-  evalHeader.addEventListener('mousedown', function(e) {
-    if (e.target.closest('.close-btn')) return;
-    dragState = {
-      offsetX: e.clientX - evalWin.getBoundingClientRect().left,
-      offsetY: e.clientY - evalWin.getBoundingClientRect().top,
-    };
-    evalWin.style.transition = 'none';
-  });
-  document.addEventListener('mousemove', function(e) {
-    if (!dragState) return;
-    var newLeft = e.clientX - dragState.offsetX;
-    var newTop = e.clientY - dragState.offsetY;
-    newLeft = Math.max(0, Math.min(window.innerWidth - evalWin.offsetWidth, newLeft));
-    newTop = Math.max(0, Math.min(window.innerHeight - evalWin.offsetHeight, newTop));
-    evalWin.style.left = newLeft + 'px';
-    evalWin.style.right = 'auto';
-    evalWin.style.top = newTop + 'px';
-    evalWin.style.bottom = 'auto';
-  });
-  document.addEventListener('mouseup', function() {
-    if (dragState) { dragState = null; evalWin.style.transition = ''; }
-  });
+  if (evalBtn && evalWin) {
+    function syncWinPos() {
+      var br = evalBtn.getBoundingClientRect();
+      // window to the LEFT of button, button at window's top-right corner
+      var winRight = Math.max(10, window.innerWidth - br.left + 8);
+      evalWin.style.right = winRight + 'px';
+      evalWin.style.top = br.top + 'px';
+      evalWin.style.bottom = 'auto';
+      evalWin.style.left = 'auto';
+      evalWin.style.transition = 'none';
+    }
 
-  // Toggle
-  evalBtn.addEventListener('click', function() {
-    var isVisible = evalWin.classList.contains('visible');
-    evalWin.classList.toggle('visible');
-    if (!isVisible) loadEvalData();
-  });
-  evalCloseBtn.addEventListener('click', function() { evalWin.classList.remove('visible'); });
+    var dragState = null;
+    var dragTarget = null;
 
-  // Refresh
-  document.getElementById('ewRefreshBtn').addEventListener('click', loadEvalData);
+    function btnStartDrag(e) {
+      var ce = e.touches ? e.touches[0] : e;
+      var rect = evalBtn.getBoundingClientRect();
+      dragState = {
+        offsetX: ce.clientX - rect.left,
+        offsetY: ce.clientY - rect.top,
+        moved: false,
+      };
+      dragTarget = 'btn';
+      evalBtn.style.transition = 'none';
+      document.body.style.cursor = 'grabbing';
+      document.body.style.userSelect = 'none';
+      e.preventDefault();
+    }
+
+    var winDragHandle = evalWin.querySelector('.eval-window-header') || evalWin;
+
+    function winStartDrag(e) {
+      var ce = e.touches ? e.touches[0] : e;
+      if (ce.target.closest('.close-btn') || ce.target.closest('button')) return;
+      dragState = {
+        offsetX: ce.clientX - evalWin.getBoundingClientRect().left,
+        offsetY: ce.clientY - evalWin.getBoundingClientRect().top,
+      };
+      dragTarget = 'win';
+      evalWin.style.transition = 'none';
+      e.preventDefault();
+    }
+
+    function moveDrag(e) {
+      if (!dragState || !dragTarget) return;
+      var ce = e.touches ? e.touches[0] : e;
+      if (dragTarget === 'btn') {
+        dragState.moved = true;
+        var btnLeft = ce.clientX - dragState.offsetX;
+        var btnTop = ce.clientY - dragState.offsetY;
+        var newRight = window.innerWidth - btnLeft - evalBtn.offsetWidth;
+        var newBottom = window.innerHeight - btnTop - evalBtn.offsetHeight;
+        newRight = Math.max(10, Math.min(window.innerWidth - 60, newRight));
+        newBottom = Math.max(10, Math.min(window.innerHeight - 60, newBottom));
+        evalBtn.style.right = newRight + 'px';
+        evalBtn.style.bottom = newBottom + 'px';
+        evalBtn.style.left = 'auto';
+        evalBtn.style.top = 'auto';
+        syncWinPos();
+      } else {
+        var newLeft = ce.clientX - dragState.offsetX;
+        var newTop = ce.clientY - dragState.offsetY;
+        newLeft = Math.max(0, Math.min(window.innerWidth - evalWin.offsetWidth, newLeft));
+        newTop = Math.max(0, Math.min(window.innerHeight - evalWin.offsetHeight, newTop));
+        evalWin.style.left = newLeft + 'px';
+        evalWin.style.right = 'auto';
+        evalWin.style.top = newTop + 'px';
+        evalWin.style.bottom = 'auto';
+      }
+      e.preventDefault();
+    }
+
+    var _btnMoved = false;
+
+    function stopDrag(e) {
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      evalBtn.style.transition = '';
+      evalWin.style.transition = '';
+      if (dragTarget === 'btn' && dragState) {
+        _btnMoved = dragState.moved;
+      }
+      dragState = null;
+      dragTarget = null;
+    }
+
+    evalBtn.addEventListener('mousedown', function(e) { _btnMoved = false; btnStartDrag(e); });
+    winDragHandle.addEventListener('mousedown', winStartDrag);
+    document.addEventListener('mousemove', moveDrag);
+    document.addEventListener('mouseup', stopDrag);
+    evalBtn.addEventListener('touchstart', function(e) { _btnMoved = false; btnStartDrag(e); }, {passive: false});
+    winDragHandle.addEventListener('touchstart', winStartDrag, {passive: false});
+    document.addEventListener('touchmove', moveDrag, {passive: false});
+    document.addEventListener('touchend', stopDrag);
+
+    // Button click = toggle window (no toggle if dragged)
+    evalBtn.addEventListener('click', function(e) {
+      if (_btnMoved) { _btnMoved = false; return; }
+      syncWinPos();
+      var isVisible = evalWin.classList.contains('visible');
+      evalWin.classList.toggle('visible');
+      if (!isVisible) loadEvalData();
+    });
+
+    if (evalCloseBtn) {
+      evalCloseBtn.addEventListener('click', function() { evalWin.classList.remove('visible'); });
+    }
+
+    var ewRefreshBtn = document.getElementById('ewRefreshBtn');
+    if (ewRefreshBtn) ewRefreshBtn.addEventListener('click', loadEvalData);
+  }
 
   async function loadEvalData() {
     try {
-      var [statsRes, logsRes] = await Promise.all([
-        fetch('/api/eval/stats?days=7'),
-        fetch('/api/eval/logs?limit=20'),
-      ]);
-      var stats = await statsRes.json();
-      var logs = await logsRes.json();
-
+      var r1 = await fetch('/api/eval/stats?days=7');
+      var stats = await r1.json();
+      var r2 = await fetch('/api/eval/logs?limit=20');
+      var logs = await r2.json();
       if (stats.success && stats.data) renderEvalStats(stats.data);
       if (logs.success && logs.data) renderEvalLogs(logs.data);
     } catch(e) { console.warn('评估数据加载失败:', e); }
@@ -1677,10 +1751,9 @@
     });
   }
 
-  // Auto-load on open
   // Auto-refresh every 30s while visible
   setInterval(function() {
-    if (evalWin.classList.contains('visible')) loadEvalData();
+    if (evalWin && evalWin.classList.contains('visible')) loadEvalData();
   }, 30000);
 })();
 </script>
