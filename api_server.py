@@ -296,9 +296,17 @@ def chat(req: ChatRequest):
         else:
             raise HTTPException(status_code=400, detail=f"未知模式: {req.mode}")
 
+        # 将 reflection 元数据嵌入 data 中传递给前端
+        response_data = result.get("data", result)
+        if isinstance(response_data, dict):
+            if "reflection" in result:
+                response_data["reflection"] = result["reflection"]
+            if "analysis" in result:
+                response_data["analysis"] = result["analysis"]
+
         return ApiResponse(
             success=result.get("status") == "success",
-            data=result.get("data", result),
+            data=response_data,
             error=result.get("error"),
             session_id=session_id,
             charts=result.get("charts") or [],

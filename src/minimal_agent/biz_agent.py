@@ -27,6 +27,8 @@ from .session_store import store as session_store
 from .intent_engine import IntentEngine, IntentResult
 from .analysis_ops import auto_analyze, financial_mom, financial_summary, sales_product_comparison, sales_monthly_trend, inventory_status_analysis
 from .visualizer import auto_chart, line_chart, bar_chart, pie_chart, clean_old_charts
+from .reflection import ReflectionPipeline, ConfidenceLevel, get_confidence_level
+from .response_builder import build_clarifying_response, attach_confidence_warning
 from .exceptions import (
     AgentError,
     ModelCallError,
@@ -964,11 +966,17 @@ class BizAgent:
         # 增强提示：意图分析 + 模板 schema
         enhanced_prompt = self._intent_engine.build_enhanced_prompt(result)
 
-        # 拼接 API 返回的数据
+        # 拼接 API 返回的数据（剥离内部元数据）
         api_section = ""
         if api_results:
-            api_section = "\n\n【API 返回数据】\n"
+            clean_results = {}
             for api_name, data in api_results.items():
+                if isinstance(data, dict):
+                    clean_results[api_name] = {k: v for k, v in data.items() if not k.startswith("_")}
+                else:
+                    clean_results[api_name] = data
+            api_section = "\n\n【API 返回数据】\n"
+            for api_name, data in clean_results.items():
                 api_section += f"\n--- {api_name} ---\n"
                 api_section += json.dumps(data, ensure_ascii=False, indent=2)
 
@@ -1039,17 +1047,25 @@ class BizAgent:
             if tracker:
                 tracker.end_step("success", f"意图={result.intent}, 置信度={result.confidence:.0%}")
 
-            if not result.is_recognized:
-                logger.info("[AnalysisMode] 未识别意图，回退到 chat()")
-                if tracker:
-                    tracker.start_step("fallback", "未识别意图")
-                    tracker.end_step("success", "fallback")
-                fallback = self.chat(user_input)
-                fallback["analysis"] = {}
-                fallback["charts"] = []
+            # ---- L1: 意图置信度检查 ----
+            l1 = ReflectionPipeline.run_layer1(
+                result.intent, result.confidence, result.params, result.template
+            )
+            if tracker:
+                tracker.start_step("reflection_l1", f"L1 score={l1.score:.2f}, passed={l1.passed}")
+
+            if not l1.passed:
+                logger.info("[AnalysisMode] L1 未通过 (score=%.2f, intent=%s), 返回澄清", l1.score, result.intent)
+                clarifying = build_clarifying_response(result.intent, result.confidence)
+                clarifying["analysis"] = {}
+                clarifying["charts"] = []
                 if tracker and task_id:
-                    tracker.end_task("success" if fallback.get("status") == "success" else "failed", str(fallback)[:200])
-                return fallback
+                    tracker.end_step("failed", f"L1 未通过，返回澄清")
+                    tracker.end_task("success", "L1 返回澄清响应")
+                return clarifying
+
+            if tracker:
+                tracker.end_step("success", f"L1 通过, score={l1.score:.2f}")
 
             # ---- Step 2: 执行 API 调用 ----
             api_results = {}
@@ -1085,6 +1101,29 @@ class BizAgent:
                         api_results[api_name] = {"error": str(e)}
                         if tracker:
                             tracker.end_step("failed", str(e)[:200])
+
+            # ---- L2: API 数据充分性检查 ----
+            l2 = ReflectionPipeline.run_layer2(api_results)
+            if tracker:
+                tracker.start_step("reflection_l2", f"L2 score={l2.score:.2f}, passed={l2.passed}")
+                tracker.end_step("success", f"数据充分性: {l2.metadata.get('api_sufficiency', {})}")
+
+            # 构建数据完整性提示（注入给 LLM）
+            sufficiency_injection = ""
+            if not l2.passed:
+                sufficiency_lines = ["\n\n【数据完整性提示】\n以下 API 返回数据可能不完整："]
+                for issue in l2.issues:
+                    sufficiency_lines.append(f"- {issue}")
+                sufficiency_lines.append("\n请在分析时注意数据局限性，不要编造缺失的数据。")
+                sufficiency_injection = "\n".join(sufficiency_lines)
+
+            # 剥离内部元数据字段（_sufficiency / _note），不暴露给 LLM
+            for api_name in list(api_results.keys()):
+                if isinstance(api_results[api_name], dict):
+                    api_results[api_name] = {
+                        k: v for k, v in api_results[api_name].items()
+                        if not k.startswith("_")
+                    }
 
             # ---- Step 3: 统计分析 ----
             if tracker:
@@ -1223,6 +1262,7 @@ class BizAgent:
                 result, api_results, analysis_results, charts,
                 chart_degraded=bool(chart_error_hint),
                 chart_error_hint=chart_error_hint,
+                sufficiency_injection=sufficiency_injection,
             )
 
             if tracker:
@@ -1238,6 +1278,45 @@ class BizAgent:
             if tracker:
                 tracker.end_step("success", "模型响应成功")
 
+            # ---- L3: 事实验证 ----
+            try:
+                parsed_for_l3 = json.loads(raw_content) if isinstance(raw_content, str) else raw_content
+            except json.JSONDecodeError:
+                parsed_for_l3 = {"answer": raw_content}
+            l3 = ReflectionPipeline.run_layer3(parsed_for_l3, api_results)
+
+            if not l3.passed:
+                logger.info("[AnalysisMode] L3 检测到事实不匹配，尝试修正重试")
+                if tracker:
+                    tracker.start_step("reflection_l3", f"L3 score={l3.score:.2f}, mismatches={len(l3.metadata.get('mismatches', []))}")
+
+                correction_prompt = self._build_correction_prompt(l3.issues)
+                retry_messages = enhanced_messages + [
+                    {"role": "assistant", "content": raw_content},
+                    {"role": "user", "content": correction_prompt},
+                ]
+                try:
+                    raw_resp2 = self._call_api(retry_messages, use_json_mode=False)
+                    raw_content2 = raw_resp2["choices"][0]["message"]["content"]
+                    # 重新检查修正后的内容
+                    try:
+                        parsed_for_l3 = json.loads(raw_content2)
+                    except json.JSONDecodeError:
+                        parsed_for_l3 = {"answer": raw_content2}
+                    l3_retry = ReflectionPipeline.run_layer3(parsed_for_l3, api_results)
+                    if l3_retry.passed:
+                        raw_content = raw_content2
+                        l3 = l3_retry
+                        if tracker:
+                            tracker.end_step("success", "L3 修正成功")
+                    else:
+                        if tracker:
+                            tracker.end_step("failed", f"L3 修正仍不匹配, score={l3_retry.score:.2f}")
+                except Exception as e:
+                    logger.warning("[AnalysisMode] L3 重试失败: %s", e)
+                    if tracker:
+                        tracker.end_step("failed", f"重试异常: {e}")
+
             # ---- Step 7: 解析 ----
             if tracker:
                 tracker.start_step("validate", "JSON 校验")
@@ -1250,9 +1329,30 @@ class BizAgent:
             if tracker:
                 tracker.end_step("success", "JSON 校验通过")
 
+            # ---- L4: 综合行动决策 ----
+            l4 = ReflectionPipeline.run_layer4(l1, l2, l3)
+            overall_confidence = l4.score
+            if tracker:
+                tracker.start_step("reflection_l4", f"L4 overall={overall_confidence:.3f}")
+                tracker.end_step("success", f"综合置信度={overall_confidence:.3f}")
+
+            # 根据整体置信度决定是否降级 status
+            final_status = output.get("status", "success")
+            if overall_confidence < 0.2:
+                final_status = "partial"
+
+            # 附加置信度警告
+            answer_text = output.get("data", {}).get("answer", "") or output.get("data", {}).get("回答", "")
+            if overall_confidence < 0.4 and answer_text:
+                level = get_confidence_level(overall_confidence)
+                answer_text = attach_confidence_warning(answer_text, level)
+                if "data" not in output:
+                    output["data"] = {}
+                output["data"]["answer"] = answer_text
+
             # 组装最终返回
             final = {
-                "status": output.get("status", "success"),
+                "status": final_status,
                 "data": output.get("data", output),
                 "analysis": analysis_results,
                 "charts": charts,
@@ -1263,6 +1363,12 @@ class BizAgent:
                     "params": result.params,
                     "matched_keywords": result.matched_keywords,
                     "api_calls": list(api_results.keys()),
+                },
+                "reflection": {
+                    "overall_confidence": overall_confidence,
+                    "l1": {"score": l1.score, "passed": l1.passed},
+                    "l2": {"score": l2.score, "passed": l2.passed},
+                    "l3": {"score": l3.score, "passed": l3.passed},
                 },
             }
 
@@ -1295,17 +1401,24 @@ class BizAgent:
         charts: list[dict],
         chart_degraded: bool = False,
         chart_error_hint: Optional[str] = None,
+        sufficiency_injection: str = "",
     ) -> list:
         """构建分析模式的增强消息"""
         data_context = self._build_data_context()
         intent_prompt = self._intent_engine.build_enhanced_prompt(result)
 
-        # API 结果（按意图过滤）
+        # API 结果（按意图过滤），剥离内部元数据字段
         filtered_apis = _filter_api_by_intent(api_results, result.intent)
+        clean_apis = {}
+        for api_name, data in filtered_apis.items():
+            if isinstance(data, dict):
+                clean_apis[api_name] = {k: v for k, v in data.items() if not k.startswith("_")}
+            else:
+                clean_apis[api_name] = data
         api_section = ""
-        if filtered_apis:
+        if clean_apis:
             api_section = "\n\n【API 返回数据】\n"
-            for api_name, data in filtered_apis.items():
+            for api_name, data in clean_apis.items():
                 api_section += f"\n--- {api_name} ---\n"
                 api_section += json.dumps(data, ensure_ascii=False, indent=2)
 
@@ -1357,6 +1470,7 @@ class BizAgent:
             f"{analysis_section}"
             f"{chart_section}"
             f"{analysis_guide}"
+            f"{sufficiency_injection}"
             f"\n\n【用户输入】\n{result.original_input}"
         )
 
@@ -1382,6 +1496,18 @@ class BizAgent:
             {"role": "system", "content": system_content},
             {"role": "user", "content": full_prompt},
         ]
+
+    @staticmethod
+    def _build_correction_prompt(issues: list[str]) -> str:
+        """构建 L3 修正提示，指导 LLM 根据真实数据修正回答。"""
+        lines = ["我之前的回答中存在以下数据不匹配问题，请修正："]
+        for issue in issues:
+            lines.append(f"- {issue}")
+        lines.append(
+            "\n请基于 API 返回的真实数据重新输出，确保所有数字准确无误。"
+            "严格按照要求的 JSON 格式输出。"
+        )
+        return "\n".join(lines)
 
     def reset_conversation(self):
         """重置对话历史、追踪器和意图引擎状态"""

@@ -16,6 +16,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
+from .reflection import ConfidenceLevel, get_confidence_level
+
 logger = logging.getLogger(__name__)
 
 
@@ -81,6 +83,13 @@ INTENT_DEFINITIONS = {
 }
 
 DEFAULT_INTENT = "default"
+
+# 置信度等级阈值（与 reflection.ConfidenceLevel 保持一致）
+CONFIDENCE_THRESHOLDS = {
+    "high": 0.5,
+    "medium": 0.2,
+    "low": 0.0,
+}
 
 # ============================================================
 # 2. 实体提取模式
@@ -497,6 +506,23 @@ class IntentResult:
         """是否有明确的意图识别结果"""
         return self.intent != DEFAULT_INTENT and self.confidence > 0
 
+    @property
+    def recognition_status(self) -> str:
+        """
+        返回识别状态: 'recognized' | 'ambiguous' | 'unrecognized'
+          - recognized:  置信度 >= 0.5（高置信度）
+          - ambiguous:   置信度 0.2 ~ 0.5（中置信度，可继续处理但需注意）
+          - unrecognized: 置信度 < 0.2（低置信度或默认意图）
+        """
+        if self.intent == DEFAULT_INTENT or self.confidence <= 0:
+            return "unrecognized"
+        level = get_confidence_level(self.confidence)
+        if level == ConfidenceLevel.HIGH:
+            return "recognized"
+        elif level == ConfidenceLevel.MEDIUM:
+            return "ambiguous"
+        return "unrecognized"
+
     def missing_params(self) -> list[str]:
         """列出缺失的必填参数"""
         if not self.template:
@@ -527,6 +553,10 @@ class IntentEngine:
 
     def __init__(self):
         self._history: list[IntentResult] = []
+
+    def get_confidence_level(self, score: float) -> ConfidenceLevel:
+        """将浮点置信度分数映射到 ConfidenceLevel"""
+        return get_confidence_level(score)
 
     def process(self, text: str) -> IntentResult:
         """

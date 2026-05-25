@@ -89,30 +89,41 @@ def query_inventory(product_name: str) -> dict:
     """查询指定产品的当前库存"""
     result = INVENTORY_DB.get(product_name)
     if result:
-        return {"status": "success", "data": result}
-    return {"status": "success", "data": {"product": product_name, "stock": 0, "warehouse": "未知", "note": "未找到该产品信息"}}
+        return {"status": "success", "data": result, "_sufficiency": "full"}
+    return {"status": "success", "data": {"product": product_name, "stock": 0, "warehouse": "未知", "note": "未找到该产品信息"}, "_sufficiency": "empty", "_note": "未找到该产品信息"}
 
 
 def get_financial_report(month: str) -> dict:
     """获取指定月份的财务报表"""
     result = FINANCIAL_DB.get(month)
     if result:
-        return {"status": "success", "data": result}
-    return {"status": "success", "data": {"note": f"暂无 {month} 的财务数据"}}
+        return {"status": "success", "data": result, "_sufficiency": "full"}
+    return {"status": "success", "data": {"note": f"暂无 {month} 的财务数据"}, "_sufficiency": "empty", "_note": f"暂无 {month} 的财务数据"}
 
 
 def get_sales_summary(product_name: str, period: str = "total") -> dict:
     """获取产品销售汇总"""
     product_data = SALES_DB.get(product_name)
     if not product_data:
-        return {"status": "success", "data": {"product": product_name, "note": "暂无该产品销售数据"}}
+        return {"status": "success", "data": {"product": product_name, "note": "暂无该产品销售数据"}, "_sufficiency": "empty", "_note": "暂无该产品销售数据"}
 
     if period == "total":
-        return {"status": "success", "data": {"product": product_name, "period": "total", "total_sales": product_data.get("total", 0)}}
+        return {"status": "success", "data": {"product": product_name, "period": "total", "total_sales": product_data.get("total", 0)}, "_sufficiency": "full"}
     elif period in product_data:
-        return {"status": "success", "data": {"product": product_name, "period": period, "sales": product_data[period]}}
+        return {"status": "success", "data": {"product": product_name, "period": period, "sales": product_data[period]}, "_sufficiency": "full"}
     else:
-        return {"status": "success", "data": {"product": product_name, "period": period, "note": f"暂无 {period} 的销售数据"}}
+        return {"status": "success", "data": {"product": product_name, "period": period, "note": f"暂无 {period} 的销售数据"}, "_sufficiency": "empty", "_note": f"暂无 {period} 的销售数据"}
+
+
+# ============================================================
+# 内部字段处理
+# ============================================================
+
+def strip_internal_fields(data: dict) -> dict:
+    """移除 API 返回中的内部元数据字段（_ 前缀的字段），用于注入 LLM 前清洗。"""
+    if not isinstance(data, dict):
+        return data
+    return {k: v for k, v in data.items() if not k.startswith("_")}
 
 
 # ============================================================
@@ -167,9 +178,9 @@ def query_employee(name: str) -> dict:
     result = EMPLOYEES_DB.get(name)
     if result:
         if result.get("status") == 0:
-            return {"status": "success", "data": {"name": name, "status": 0, "status_text": "已离职", "note": "该员工已离职，无在职信息"}}
-        return {"status": "success", "data": result}
-    return {"status": "success", "data": {"note": f"未找到员工 '{name}'"}}
+            return {"status": "success", "data": {"name": name, "status": 0, "status_text": "已离职", "note": "该员工已离职，无在职信息"}, "_sufficiency": "full"}
+        return {"status": "success", "data": result, "_sufficiency": "full"}
+    return {"status": "success", "data": {"note": f"未找到员工 '{name}'"}, "_sufficiency": "empty", "_note": f"未找到员工 '{name}'"}
 
 
 def list_employees_by_department(department: str) -> dict:
@@ -177,8 +188,8 @@ def list_employees_by_department(department: str) -> dict:
     rows = enterprise_db.get_employees_by_department(department)
     active = [r for r in rows if r.get("status") != 0]
     if active:
-        return {"status": "success", "data": {"department": department, "employees": active, "count": len(active)}}
-    return {"status": "success", "data": {"department": department, "employees": [], "count": 0, "note": "该部门暂无在职员工"}}
+        return {"status": "success", "data": {"department": department, "employees": active, "count": len(active)}, "_sufficiency": "full"}
+    return {"status": "success", "data": {"department": department, "employees": [], "count": 0, "note": "该部门暂无在职员工"}, "_sufficiency": "empty", "_note": "该部门暂无在职员工"}
 
 
 def add_employee(name: str, department: str, position: str, salary: int, hire_date: str = "") -> dict:
@@ -205,8 +216,8 @@ def query_customer(name: str) -> dict:
     """查询客户信息"""
     result = CUSTOMERS_DB.get(name)
     if result:
-        return {"status": "success", "data": result}
-    return {"status": "success", "data": {"note": f"未找到客户 '{name}'"}}
+        return {"status": "success", "data": result, "_sufficiency": "full"}
+    return {"status": "success", "data": {"note": f"未找到客户 '{name}'"}, "_sufficiency": "empty", "_note": f"未找到客户 '{name}'"}
 
 
 def list_customers_by_tier(tier: str) -> dict:
@@ -214,8 +225,8 @@ def list_customers_by_tier(tier: str) -> dict:
     rows = enterprise_db.get_customers_by_tier(tier)
     if rows:
         total = sum(r["total_spent"] for r in rows)
-        return {"status": "success", "data": {"tier": tier, "customers": rows, "count": len(rows), "total_spent": total}}
-    return {"status": "success", "data": {"tier": tier, "customers": [], "count": 0}}
+        return {"status": "success", "data": {"tier": tier, "customers": rows, "count": len(rows), "total_spent": total}, "_sufficiency": "full"}
+    return {"status": "success", "data": {"tier": tier, "customers": [], "count": 0}, "_sufficiency": "empty", "_note": f"无 {tier} 等级客户"}
 
 
 def list_customers_by_region(region: str) -> dict:
@@ -223,8 +234,8 @@ def list_customers_by_region(region: str) -> dict:
     rows = enterprise_db.get_customers_by_region(region)
     if rows:
         total = sum(r["total_spent"] for r in rows)
-        return {"status": "success", "data": {"region": region, "customers": rows, "count": len(rows), "total_spent": total}}
-    return {"status": "success", "data": {"region": region, "customers": [], "count": 0}}
+        return {"status": "success", "data": {"region": region, "customers": rows, "count": len(rows), "total_spent": total}, "_sufficiency": "full"}
+    return {"status": "success", "data": {"region": region, "customers": [], "count": 0}, "_sufficiency": "empty", "_note": f"无 {region} 地区客户"}
 
 
 def add_customer(name: str, tier: str = "普通", region: str = "") -> dict:
